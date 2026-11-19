@@ -89,6 +89,126 @@ describe('sculpted surfaces', () => {
 })
 
 describe('procedural rig and materials', () => {
+  it.each(['kawaii', 'anime', 'plush', 'glass'] as const)(
+    'stands on grounded hind feet across every %s species and preserves expression cues',
+    (style) => {
+      for (const species of ['fox', 'cat', 'bunny', 'custom'] as const) {
+        const next = {
+          ...state(style),
+          appearance: { ...state(style).appearance!, species, parts: SPECIES_PART_DEFAULTS[species], pose: 'stand' as const },
+        }
+        const pet = createProceduralPet(next, 'low')
+        expect(pet.poseBlend).toBe(1)
+        expect(pet.group.getObjectByName('bone-head')!.position.y).toBeGreaterThan(1.4)
+        const feet: THREE.Mesh[] = []
+        pet.group.traverse((node) => { if (node.name === 'mesh-hind-foot') feet.push(node as THREE.Mesh) })
+        expect(feet).toHaveLength(2)
+        for (const foot of feet) {
+          const bounds = visualBounds(foot)
+          expect(bounds.min.y).toBeGreaterThan(0)
+          expect(bounds.min.y).toBeLessThan(0.03)
+          const soleNormal = new THREE.Vector3(0, 0, 1).transformDirection(foot.matrixWorld)
+          expect(soleNormal.y).toBeLessThan(-0.99)
+          expect(foot.getObjectByName('hind-sole-pads')!.visible).toBe(false)
+          expect(foot.getObjectByName('hind-toe-splits')!.visible).toBe(true)
+          const torso = visualBounds(pet.group.getObjectByName('mesh-body')!)
+          expect(torso.min.y - bounds.max.y).toBeGreaterThan(0.10)
+        }
+        pet.update({ ...next, emotion: 'happy' }, 1)
+        expect(pet.group.getObjectByName('eye-happy-arc')!.visible).toBe(true)
+        expect(pet.group.getObjectByName('eye-open')!.visible).toBe(false)
+        expect(pet.group.getObjectByName('mesh-mouth-open')!.visible).toBe(true)
+        pet.update({ ...next, emotion: 'love' }, 2)
+        expect(pet.group.getObjectByName('eye-heart')!.visible).toBe(true)
+        pet.update({ ...next, emotion: 'sad' }, 3)
+        expect(pet.group.getObjectByName('eye-tear')!.visible).toBe(true)
+        pet.update({ ...next, emotion: 'tired' }, 4)
+        expect(pet.group.getObjectByName('eye-half-lid')!.visible).toBe(true)
+        pet.update({ ...next, emotion: 'neutral' }, 5)
+        expect(pet.group.getObjectByName('eye-half-lid')!.visible).toBe(false)
+        expect(pet.group.getObjectByName('eye-tear')!.visible).toBe(false)
+        pet.dispose()
+      }
+    },
+  )
+  it('blends an existing rig, reverses without snapping, and honors reduced motion', () => {
+    const sit = { ...state(), reducedMotion: false }
+    const stand = { ...sit, appearance: { ...sit.appearance!, pose: 'stand' as const } }
+    const pet = createProceduralPet(sit, 'low')
+    pet.update(stand, 0)
+    pet.update(stand, 0.3)
+    expect(pet.poseBlend).toBeCloseTo(0.5)
+    const headY = pet.group.getObjectByName('bone-head')!.position.y
+    pet.update(sit, 0.3)
+    expect(pet.poseBlend).toBeCloseTo(0.5)
+    expect(pet.group.getObjectByName('bone-head')!.position.y).toBe(headY)
+    pet.update(sit, 0.9)
+    expect(pet.poseBlend).toBe(0)
+    pet.update({ ...stand, reducedMotion: true }, 0.9)
+    expect(pet.poseBlend).toBe(1)
+    pet.dispose()
+  })
+  it('keeps the feet above the floor throughout the transition and restores seated soles', () => {
+    const sit = { ...state(), reducedMotion: false }
+    const stand = { ...sit, appearance: { ...sit.appearance!, pose: 'stand' as const } }
+    const pet = createProceduralPet(sit, 'low')
+    pet.update(stand, 0)
+    for (let i = 1; i <= 12; i++) {
+      pet.update(stand, i * 0.05)
+      pet.group.updateMatrixWorld(true)
+      pet.group.traverse((foot) => {
+        if (foot.name !== 'mesh-hind-foot') return
+        // Rotated local bounding boxes include empty corners; check the actual surface vertices.
+        foot.traverseVisible((node) => {
+          const mesh = node as THREE.Mesh
+          if (!mesh.geometry) return
+          const position = mesh.geometry.getAttribute('position')
+          const vertex = new THREE.Vector3()
+          for (let j = 0; j < position.count; j++)
+            expect(vertex.fromBufferAttribute(position, j).applyMatrix4(mesh.matrixWorld).y).toBeGreaterThan(0)
+        })
+      })
+    }
+    pet.update({ ...sit, reducedMotion: true }, 1)
+    pet.group.traverse((node) => {
+      if (node.name !== 'mesh-hind-foot') return
+      expect(node.rotation.x).toBe(0)
+      expect(node.scale.toArray()).toEqual([1, 1, 1])
+      expect(node.getObjectByName('hind-sole-pads')!.visible).toBe(true)
+      expect(node.getObjectByName('hind-toe-splits')!.visible).toBe(false)
+    })
+    pet.dispose()
+  })
+  it.each(['low', 'medium', 'high'] as const)('gates glass halos at %s quality and disposes them once', (tier) => {
+    const pet = createProceduralPet(state('glass'), tier)
+    const resources = new Set<THREE.Material | THREE.BufferGeometry>()
+    let halos = 0
+    pet.group.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (mesh.name === 'glass-halo') {
+        halos++
+        expect(mesh.userData.ignoreFraming).toBe(true)
+      }
+      if (mesh.geometry) resources.add(mesh.geometry)
+      const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+      materials.forEach((material) => resources.add(material))
+    })
+    expect(halos > 0).toBe(tier !== 'low')
+    const spies = [...resources].map((resource) => vi.spyOn(resource, 'dispose'))
+    pet.dispose()
+    pet.dispose()
+    spies.forEach((spy) => expect(spy).toHaveBeenCalledTimes(1))
+  })
+  it('disables extra glass glow on a weak device even with explicit high quality', () => {
+    vi.stubGlobal('navigator', { hardwareConcurrency: 2, deviceMemory: 2 })
+    try {
+      const pet = createProceduralPet(state('glass'), 'high')
+      expect(pet.group.getObjectByName('glass-halo')).toBeUndefined()
+      pet.dispose()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
   it('uses the normal attribute in basic and lit hull shaders, with distinct program keys', () => {
     const basic = new THREE.MeshBasicMaterial(),
       lit = new THREE.MeshStandardMaterial()

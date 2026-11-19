@@ -420,6 +420,7 @@ export class ThreePetRenderer implements PetRenderer {
       this.#signature,
       this.#state.appearance?.proportions,
       Boolean(this.#model),
+      this.#pet?.poseBlend,
     ])
     if (signature === this.#framing) return
     this.#framing = signature
