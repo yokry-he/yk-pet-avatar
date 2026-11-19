@@ -8,9 +8,10 @@ import {
 } from '@yk-pet/core'
 import { eyeLids, idleMotion, naturalBlink } from './motion'
 import { poseRig } from './pose'
+import { compositeGlass, type DrawContext } from './glass'
 
 interface Env {
-  ctx: CanvasRenderingContext2D
+  ctx: DrawContext
   style: StylePreset
   colors: PetColors
   proportions: PetProportions
@@ -31,6 +32,7 @@ interface Env {
   detail: boolean
   blink: number
   rig: ReturnType<typeof poseRig>
+  glassPass?: 'mask' | 'markings'
 }
 const TAU = Math.PI * 2
 type Bounds = [number, number, number, number]
@@ -103,27 +105,47 @@ export function drawPet(
   ctx.rotate(env.pose.lean + yaw * 0.16)
   if (pose.sleep > 0) ctx.rotate(-0.2 * pose.sleep)
   // Anchor squash/stretch at the feet so breathing does not float above the shadow.
-  const floor = 82 * proportions.bodyScale * proportions.bodyLength
+  const floor = env.rig.floor * proportions.bodyScale * proportions.bodyLength
   ctx.translate(0, floor - env.pose.bob - env.pose.jump)
   ctx.scale(env.pose.squashX, env.pose.squashY)
   ctx.translate(0, -floor)
   const seated = !['walk', 'jump', 'working', 'dragged'].includes(action)
-  drawTail(env)
-  drawHindLegs(env)
-  drawBody(env, seated)
-  drawPaws(env, seated)
+  if (style.id === 'glass' && env.rig.stand > 0) {
+    const merged = compositeGlass(ctx, mask => drawStructure({ ...env, ctx: mask, glassPass: 'mask' }, seated),
+      env.rig.stand, env.outlineWidth, env.detail)
+    if (merged) {
+      // Fade the old material away during the same rig transition, preserving sitting exactly.
+      if (env.rig.stand < 1) {
+        ctx.save(); ctx.globalAlpha *= 1 - env.rig.stand
+        drawStructure(env, seated); ctx.restore()
+      }
+      ctx.save(); ctx.globalAlpha *= env.rig.stand
+      drawStructure({ ...env, glassPass: 'markings' }, seated); ctx.restore()
+    } else drawStructure(env, seated)
+  } else drawStructure(env, seated)
+  withHead(env, () => {
+    drawFace(env)
+    drawAccessories(env, true)
+  })
+  drawAccessories(env, false)
+  drawEffects(env)
+  ctx.restore()
+}
+function withHead(env: Env, draw: () => void): void {
+  const { ctx, proportions } = env
   ctx.save()
   ctx.translate(0, env.rig.headY)
   ctx.rotate(env.headTilt)
   ctx.scale(proportions.headScale, proportions.headScale)
-  drawEars(env)
-  drawHead(env)
-  drawFace(env)
-  drawAccessories(env, true)
+  draw()
   ctx.restore()
-  drawAccessories(env, false)
-  drawEffects(env)
-  ctx.restore()
+}
+function drawStructure(env: Env, seated: boolean): void {
+  drawTail(env)
+  drawHindLegs(env, seated)
+  drawBody(env, seated)
+  drawPaws(env, seated)
+  withHead(env, () => { drawEars(env); drawHead(env) })
 }
 function isAction(value: string): value is PetAction {
   return ['idle', 'walk', 'sleep', 'happy', 'sad', 'thinking', 'talking', 'eating', 'dragged',
@@ -138,8 +160,8 @@ function withAlpha(color: string, alpha: number): string {
   return Number.isNaN(n) ? color : `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
 }
 
-const furTextures = new WeakMap<CanvasRenderingContext2D, CanvasPattern>()
-function getFurTexture(ctx: CanvasRenderingContext2D): CanvasPattern | undefined {
+const furTextures = new WeakMap<DrawContext, CanvasPattern>()
+function getFurTexture(ctx: DrawContext): CanvasPattern | undefined {
   const cached = furTextures.get(ctx)
   if (cached) return cached
   const tile = typeof document !== 'undefined' ? document.createElement('canvas')
@@ -174,6 +196,18 @@ function paint(env: Env, trace: () => void, fill: string, outlineScale = 1,
   const [x, y, w, h] = bounds
   const mode = style.material.mode
   ctx.save(); ctx.beginPath(); trace()
+  if (env.glassPass) {
+    if (env.glassPass === 'mask') {
+      if (outlineScale >= 0.6) { ctx.fillStyle = '#fff'; ctx.fill() }
+    } else if (outlineScale === 0) {
+      // Surface markings tint the shared volume; they carry no internal glass rim.
+      ctx.fillStyle = fill === env.colors.innerEar ? 'rgba(85,73,171,0.25)'
+        : fill === env.colors.blush || fill === mixHex(env.colors.blush, '#ef9b91', 0.25) ? 'rgba(177,238,255,0.5)'
+        : fill === env.colors.accent ? 'rgba(221,250,255,0.34)' : 'rgba(210,241,255,0.12)'
+      ctx.fill()
+    }
+    ctx.restore(); return
+  }
   if (mode === 'glass') {
     const gradient = ctx.createLinearGradient(x, y, x + w, y + h * 0.8)
     gradient.addColorStop(0, 'rgba(112,220,248,0.68)')
@@ -242,10 +276,10 @@ function paint(env: Env, trace: () => void, fill: string, outlineScale = 1,
 function ellipse(env: Env, x: number, y: number, rx: number, ry: number, color: string, line = 1): void {
   paint(env, () => env.ctx.ellipse(x, y, rx, ry, 0, 0, TAU), color, line, [x - rx, y - ry, rx * 2, ry * 2])
 }
-function drawPlatform({ ctx, style, pose, proportions }: Env): void {
+function drawPlatform({ ctx, style, pose, proportions, rig }: Env): void {
   ctx.save()
   const glass = style.id === 'glass'
-  const floor = 82 * proportions.bodyScale * proportions.bodyLength
+  const floor = rig.floor * proportions.bodyScale * proportions.bodyLength
   const shadow = ctx.createRadialGradient(0, floor, 4, 0, floor, 70)
   shadow.addColorStop(0, glass ? 'rgba(104,116,244,0.23)' : 'rgba(112,69,39,0.2)')
   shadow.addColorStop(1, glass ? 'rgba(104,116,244,0)' : 'rgba(112,69,39,0)')
@@ -266,25 +300,32 @@ function drawTail(env: Env): void {
     ellipse(env, 17, 3, parts.tail === 'bob' ? 14 : 23, parts.tail === 'bob' ? 14 : 22, c.accent, 0.6)
   } else {
     const softTail = env.style.id === 'kawaii' || env.style.id === 'plush'
+    const t = env.rig.stand
     const tail = () => {
       if (softTail) {
         ctx.moveTo(-8, 12)
         ctx.bezierCurveTo(29, 43, 89, 25, 91, -18)
-        ctx.bezierCurveTo(92, -41, 84, -54, 94, -60)
-        ctx.quadraticCurveTo(102, -64, 96, -68)
-        ctx.quadraticCurveTo(86, -76, 75, -73)
-        ctx.quadraticCurveTo(59, -80, 42, -63)
+        ctx.bezierCurveTo(92, -41, 84 + 16 * t, -54 + 11 * t, 94 + 9 * t, -60 + t)
+        ctx.quadraticCurveTo(102 + 5 * t, -64 - 13 * t, 96 - 2 * t, -68 - 15 * t)
+        ctx.quadraticCurveTo(86 - 3 * t, -76 - 14 * t, 75 + t, -73 - 6 * t)
+        ctx.quadraticCurveTo(59 + 6 * t, -80 + 14 * t, 42, -63)
         ctx.quadraticCurveTo(37, -60, 40, -67)
         ctx.bezierCurveTo(19, -54, 18, -29, 25, -15)
         ctx.bezierCurveTo(32, 2, 14, 9, -8, 12); ctx.closePath()
         return
       }
       ctx.moveTo(-6, 12); ctx.bezierCurveTo(34, 39, 80, 17, 82, -28)
-      ctx.quadraticCurveTo(83, -46, 94, -53); ctx.quadraticCurveTo(69, -80, 45, -61)
+      if (t === 0) {
+        ctx.quadraticCurveTo(83, -46, 94, -53); ctx.quadraticCurveTo(69, -80, 45, -61)
+      } else {
+        ctx.quadraticCurveTo(83 + 3 * t, -46 + 8 * t, 94 + 5 * t, -53 - 3 * t)
+        ctx.quadraticCurveTo(81.5 + 28.5 * t, -66.5 - 3.5 * t, 65.75 + 25.25 * t, -68.5 - 12.5 * t)
+        ctx.quadraticCurveTo(57 + 12 * t, -70.5 - 17.5 * t, 45, -61)
+      }
       ctx.lineTo(48, -68); ctx.quadraticCurveTo(26, -55, 28, -24)
       ctx.bezierCurveTo(31, -3, 16, 6, -6, 12); ctx.closePath()
     }
-    paint(env, tail, c.body, 1, [-8, -80, 110, 114])
+    paint(env, tail, c.body, 1, [-8, -80 - 8 * t, 110 + 8 * t, 114 + 8 * t])
     ctx.save(); ctx.beginPath(); tail(); ctx.clip()
     paint(env, () => {
       if (softTail) {
@@ -297,7 +338,7 @@ function drawTail(env: Env): void {
         ctx.closePath()
         return
       }
-      ctx.moveTo(22, -77); ctx.lineTo(105, -77); ctx.lineTo(100, -28)
+      ctx.moveTo(22, -77 - 17 * t); ctx.lineTo(105 + 5 * t, -77 - 17 * t); ctx.lineTo(100, -28)
       ctx.lineTo(77, -11); ctx.lineTo(78, -31); ctx.lineTo(63, -18)
       ctx.lineTo(61, -37); ctx.lineTo(45, -28); ctx.lineTo(43, -47); ctx.lineTo(27, -39); ctx.closePath()
     }, c.accent, 0, [20, -80, 85, 64]); ctx.restore()
@@ -307,11 +348,15 @@ function drawTail(env: Env): void {
 function drawBody(env: Env, seated: boolean): void {
   const { ctx, proportions: p, colors: c } = env
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
-  ctx.translate(0, env.rig.bodyY); ctx.scale(env.rig.bodyWidth, 1)
+  ctx.translate(0, env.rig.bodyY); ctx.scale(env.rig.bodyWidth, env.rig.bodyHeight)
   paint(env, () => {
     ctx.moveTo(-25, -11); ctx.bezierCurveTo(-43, -2, -48, 29, -47, 42)
     ctx.bezierCurveTo(-49, 80, 45, 83, 46, 45); ctx.bezierCurveTo(46, 22, 38, -4, 25, -11); ctx.closePath()
   }, c.body, 1, [-48, -13, 96, 90])
+  if (env.glassPass === 'markings') {
+    ctx.strokeStyle = 'rgba(218,254,255,0.4)'; ctx.lineWidth = 1.2; ctx.lineCap = 'round'
+    ctx.beginPath(); ctx.moveTo(-28, 3); ctx.bezierCurveTo(-35, 14, -37, 26, -36, 31); ctx.stroke()
+  }
   paint(env, () => {
     ctx.moveTo(-24, 1); ctx.quadraticCurveTo(0, -7, 24, 1)
     ctx.lineTo(22, 12); ctx.lineTo(27, 17); ctx.lineTo(20, 16)
@@ -372,7 +417,7 @@ function drawEars(env: Env): void {
     ctx.restore()
   }
 }
-function headPath(ctx: CanvasRenderingContext2D, fox: boolean): void {
+function headPath(ctx: DrawContext, fox: boolean): void {
   ctx.moveTo(0, -58); ctx.bezierCurveTo(39, -58, 58, -35, 60, -8)
   if (fox) {
     ctx.quadraticCurveTo(61, 11, 70, 15); ctx.quadraticCurveTo(69, 20, 61, 22)
@@ -594,7 +639,7 @@ function drawPaws(env: Env, seated: boolean): void {
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
   for (const side of [-1, 1]) {
     ctx.save(); ctx.translate(side * env.rig.footX, env.rig.footY + (seated ? 0 : Math.sin(pose.pawPhase) * side * 5))
-    ctx.rotate(side * (0.23 - 0.18 * env.rig.stand))
+    ctx.rotate(side * env.rig.footAngle)
     ctx.scale(env.rig.footWidth, env.rig.footHeight)
     ellipse(env, 0, 0, 18, 21, c.body); ellipse(env, 0, 3, 13.5, 16, c.belly, 0)
     ellipse(env, 0, 7, 6.8, 7, mixHex(c.blush, '#ef9b91', 0.25), 0)
@@ -606,6 +651,7 @@ function drawPaws(env: Env, seated: boolean): void {
     if ((pose.wave > 0 || env.emotion === 'angry') && side < 0) {
       ctx.rotate(1.75 + Math.sin(env.time * 7) * 0.15 * pose.wave)
     } else ctx.rotate(side * (0.13 - 0.25 * env.rig.stand))
+    ctx.scale(env.rig.armScale, env.rig.armScale)
     if (seated) {
       ctx.scale(side, 1)
       paint(env, () => {
@@ -640,19 +686,24 @@ function drawPaws(env: Env, seated: boolean): void {
   ctx.restore()
 }
 /** Short weight-bearing haunches behind the belly, separate from the forward-facing feet. */
-function drawHindLegs(env: Env): void {
+function drawHindLegs(env: Env, seated: boolean): void {
   if (env.rig.stand === 0) return
   const { ctx, proportions: p, colors: c, pose } = env
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
   ctx.globalAlpha *= env.rig.stand
   for (const side of [-1, 1]) {
-    const step = Math.sin(pose.pawPhase) * side * 5
+    const step = seated ? 0 : Math.sin(pose.pawPhase) * side * 5
     ctx.save(); ctx.translate(side * env.rig.legX, step)
     paint(env, () => {
-      ctx.moveTo(-13, 43); ctx.quadraticCurveTo(-17, 55, -13, 70)
-      ctx.bezierCurveTo(-10, 79, 12, 78, 14, 68)
-      ctx.quadraticCurveTo(17, 55, 11, 43); ctx.closePath()
-    }, c.body, 0.8, [-16, 43, 33, 35])
+      const extension = 12 * env.rig.stand
+      ctx.moveTo(-13, 40); ctx.quadraticCurveTo(-17, 55, -11, 70 + extension)
+      ctx.bezierCurveTo(-8, 79 + extension, 11, 78 + extension, 12, 68 + extension)
+      ctx.quadraticCurveTo(17, 55, 11, 40); ctx.closePath()
+    }, c.body, 0.8, [-16, 40, 33, 39 + 12 * env.rig.stand])
+    if (env.glassPass === 'markings') {
+      ctx.strokeStyle = 'rgba(209,252,255,0.38)'; ctx.lineWidth = 1; ctx.lineCap = 'round'
+      ctx.beginPath(); ctx.moveTo(-8, 55); ctx.quadraticCurveTo(-9, 64, -7, 69); ctx.stroke()
+    }
     ctx.restore()
   }
   ctx.restore()
@@ -759,13 +810,13 @@ function drawEffects(env: Env): void {
   }
   ctx.restore()
 }
-function heart(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, color: string): void {
+function heart(ctx: DrawContext, x: number, y: number, size: number, color: string): void {
   ctx.save(); ctx.translate(x, y); ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0, size * 0.65)
   ctx.bezierCurveTo(-size * 1.45, -size * 0.2, -size * 0.7, -size * 1.2, 0, -size * 0.45)
   ctx.bezierCurveTo(size * 0.7, -size * 1.2, size * 1.45, -size * 0.2, 0, size * 0.65)
   ctx.fill(); ctx.restore()
 }
-function star(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+function star(ctx: DrawContext, x: number, y: number, radius: number): void {
   ctx.save(); ctx.translate(x, y); ctx.beginPath()
   for (let i = 0; i < 8; i++) {
     const angle = i / 8 * TAU - Math.PI / 2

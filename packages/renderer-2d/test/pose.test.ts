@@ -53,16 +53,33 @@ describe('Canvas body pose transition', () => {
     expect(transitionPose(initial, 'stand', 1, true).amount).toBe(1)
   })
 
-  it('preserves the seated coordinates and anchors both sets of feet to the floor', () => {
+  it('preserves seated coordinates and moves the floor with the feet while standing', () => {
     expect(poseRig(0)).toMatchObject({ headY: -53, bodyY: -0, bodyWidth: 1, footX: 39, footY: 61,
-      footWidth: 1, footHeight: 1, tailX: 39, tailY: 51 })
+      bodyHeight: 1, floor: 82, footWidth: 1, footHeight: 1, footAngle: 0.23, armScale: 1, tailX: 39, tailY: 51 })
     for (const amount of [0, 0.25, 0.5, 0.75, 1]) {
       const rig = poseRig(amount)
-      expect(rig.footY + 21 * rig.footHeight).toBeCloseTo(82, 0)
+      const sole = rig.footY + Math.hypot(18 * rig.footWidth * Math.sin(rig.footAngle),
+        21 * rig.footHeight * Math.cos(rig.footAngle))
+      expect(sole).toBeCloseTo(rig.floor, 0)
       expect(rig.footX - rig.legX).toBe(2)
-      expect(rig.bodyWidth).toBeGreaterThan(0.8)
+      expect(rig.bodyWidth).toBeGreaterThanOrEqual(0.8)
     }
     expect(poseRig(-1)).toEqual(poseRig(0))
     expect(poseRig(2)).toEqual(poseRig(1))
+  })
+
+  it('leaves visible shins above separated, outward-facing feet and lowers the smaller front paws', () => {
+    const standing = poseRig(1)
+    // 74 bounds the seated hip curve; even this conservative bound must clear the foot top.
+    const hip = standing.bodyY + 74 * standing.bodyHeight
+    const footTop = standing.footY - 21 * standing.footHeight
+    expect(footTop - hip).toBeGreaterThan(10)
+    expect(standing.footX * 2 - 36 * standing.footWidth).toBeGreaterThan(20)
+    expect(standing.footAngle).toBeGreaterThan(0.15)
+    expect(standing.armScale).toBeLessThan(0.8)
+    // The palm center rests below the upper half of the belly, rather than near the chin.
+    expect(25 + standing.armLift + 21 * standing.armScale).toBeGreaterThan(30)
+    expect(standing.floor).toBeGreaterThan(poseRig(0).floor)
+    expect(standing.headY).toBe(-69)
   })
 })
