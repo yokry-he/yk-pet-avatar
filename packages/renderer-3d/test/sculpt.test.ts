@@ -1,0 +1,176 @@
+import { describe, expect, it, vi } from 'vitest'
+import * as THREE from 'three'
+import { APRICOT_COLORS, DEFAULT_PROPORTIONS, SPECIES_PART_DEFAULTS, type PetVisualState } from '@yk-pet/core'
+import { cameraFit, earSurface, pillowSurface, sculptedForm, sweptTail, visualBounds } from '../src/sculpt'
+import { createProceduralPet, inflate } from '../src/procedural'
+
+const state = (
+  style: PetVisualState['style'] = 'kawaii',
+  species: 'fox' | 'cat' | 'bunny' = 'fox',
+): PetVisualState => ({
+  style,
+  behavior: 'idle',
+  reducedMotion: true,
+  appearance: {
+    species,
+    colors: APRICOT_COLORS,
+    proportions: DEFAULT_PROPORTIONS,
+    parts: SPECIES_PART_DEFAULTS[species],
+    accessories: [],
+  },
+})
+
+describe('sculpted surfaces', () => {
+  it('produces finite positions, normals and UVs at roots and pointed tips', () => {
+    const geometries = [
+      sculptedForm('head'),
+      sculptedForm('body'),
+      earSurface(0.6, 0.22, 0.1),
+      sweptTail(),
+      pillowSurface(
+        [
+          [-1, 0],
+          [0, 1],
+          [1, 0],
+          [0, -1],
+        ],
+        (_x, _y, r) => 0.2 * (1 - r * r),
+      ),
+    ]
+    for (const geometry of geometries) {
+      for (const key of ['position', 'normal', 'uv']) {
+        expect([...geometry.getAttribute(key).array].every(Number.isFinite)).toBe(true)
+      }
+      geometry.computeBoundingBox()
+      expect(geometry.boundingBox!.isEmpty()).toBe(false)
+      geometry.dispose()
+    }
+  })
+  it('keeps the curved tail to two material draws with a cream tip', () => {
+    const tail = sweptTail()
+    expect(tail.groups.map((g) => g.materialIndex)).toEqual([0, 1])
+    expect(tail.groups.reduce((n, g) => n + g.count, 0)).toBe(tail.index!.count)
+    tail.computeBoundingBox()
+    expect(tail.boundingBox!.max.y).toBeGreaterThan(0.85)
+    const position = tail.getAttribute('position'),
+      normal = tail.getAttribute('normal')
+    const center = new THREE.Vector3()
+    const row = 20,
+      radial = 24
+    for (let i = 0; i < radial; i++)
+      center.add(new THREE.Vector3().fromBufferAttribute(position, row * (radial + 1) + i))
+    center.divideScalar(radial)
+    for (let i = 0; i < radial; i++) {
+      const index = row * (radial + 1) + i
+      const offset = new THREE.Vector3().fromBufferAttribute(position, index).sub(center)
+      expect(offset.dot(new THREE.Vector3().fromBufferAttribute(normal, index))).toBeGreaterThan(0)
+    }
+    tail.dispose()
+  })
+  it('ignores hidden surfaces and atmospheric effects when framing', () => {
+    const group = new THREE.Group(),
+      material = new THREE.MeshBasicMaterial()
+    const character = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), material)
+    const halo = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), material)
+    halo.userData.ignoreFraming = true
+    const hidden = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10), material)
+    hidden.visible = false
+    group.add(character, halo, hidden)
+    expect(visualBounds(group).getSize(new THREE.Vector3()).toArray()).toEqual([1, 2, 1])
+    for (const mesh of [character, halo, hidden]) mesh.geometry.dispose()
+    material.dispose()
+  })
+  it.each([0.45, 1, 1.54, 3])('fits both viewport axes at aspect %s', (aspect) => {
+    const distance = cameraFit(2.1, 2.5, aspect)
+    const vertical = distance * Math.tan(THREE.MathUtils.degToRad(16))
+    expect(vertical).toBeGreaterThanOrEqual((2.5 / 2) * 1.19)
+    expect(vertical * aspect).toBeGreaterThanOrEqual((2.1 / 2) * 1.19)
+  })
+})
+
+describe('procedural rig and materials', () => {
+  it('uses the normal attribute in basic and lit hull shaders, with distinct program keys', () => {
+    const basic = new THREE.MeshBasicMaterial(),
+      lit = new THREE.MeshStandardMaterial()
+    inflate(basic, 0.007)
+    inflate(lit, 0.02)
+    for (const material of [basic, lit]) {
+      const shader = { uniforms: {}, vertexShader: '#include <begin_vertex>' }
+      material.onBeforeCompile(shader as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer)
+      expect(shader.vertexShader).toContain('normalize(normal)')
+      expect(shader.vertexShader).not.toContain('objectNormal')
+    }
+    expect(basic.customProgramCacheKey()).not.toBe(lit.customProgramCacheKey())
+    basic.dispose()
+    lit.dispose()
+  })
+  it.each(['kawaii', 'anime', 'plush', 'glass'] as const)(
+    'creates, poses and disposes %s without DOM resources',
+    (style) => {
+      const pet = createProceduralPet(state(style), 'low')
+      for (const emotion of [
+        'neutral',
+        'happy',
+        'sad',
+        'excited',
+        'angry',
+        'shy',
+        'surprised',
+        'love',
+        'tired',
+        'focused',
+      ]) {
+        pet.update({ ...state(style), emotion }, 4.08)
+        pet.group.updateMatrixWorld(true)
+        const box = visualBounds(pet.group)
+        expect(box.max.y).toBeGreaterThan(1.9)
+        expect(box.max.y).toBeLessThan(2.6)
+        expect(box.min.y).toBeGreaterThan(-0.04)
+      }
+      const resources = new Set<THREE.BufferGeometry | THREE.Material | THREE.Texture>()
+      pet.group.traverse((node) => {
+        const mesh = node as THREE.Mesh
+        if (mesh.geometry) resources.add(mesh.geometry)
+        for (const material of Array.isArray(mesh.material)
+          ? mesh.material
+          : mesh.material
+            ? [mesh.material]
+            : []) {
+          resources.add(material)
+          for (const value of Object.values(material))
+            if (value instanceof THREE.Texture) resources.add(value)
+        }
+        if (node.name.startsWith('fur-shell-')) expect(node.name).toBe('fur-shell-1')
+        if (
+          mesh.material instanceof THREE.MeshPhysicalMaterial &&
+          mesh.name === 'mesh-body' &&
+          style === 'glass'
+        )
+          expect(mesh.material.transmission).toBe(0)
+      })
+      const spies = [...resources].map((resource) => vi.spyOn(resource, 'dispose'))
+      pet.dispose()
+      pet.dispose()
+      spies.forEach((spy) => expect(spy).toHaveBeenCalledTimes(1))
+    },
+  )
+  it('retains cat and long-eared bunny variants and repeatable channel poses', () => {
+    for (const species of ['cat', 'bunny'] as const) {
+      const next = {
+        ...state('kawaii', species),
+        channels: [
+          { kind: 'bone' as const, target: 'bone-paw-r', property: 'rotation.z' as const, value: 0.3 },
+        ],
+      }
+      const pet = createProceduralPet(next, 'low')
+      pet.update(next, 1)
+      const paw = pet.group.getObjectByName('bone-paw-r')!
+      const rotation = paw.rotation.z
+      pet.update(next, 1)
+      expect(paw.rotation.z).toBe(rotation)
+      const ears = pet.group.getObjectByName('bone-ear-l')!
+      expect(ears.children.length).toBeGreaterThan(0)
+      pet.dispose()
+    }
+  })
+})
