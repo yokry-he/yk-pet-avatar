@@ -7,6 +7,7 @@ import {
   type Species, type StylePreset,
 } from '@yk-pet/core'
 import { eyeLids, idleMotion, naturalBlink } from './motion'
+import { poseRig } from './pose'
 
 interface Env {
   ctx: CanvasRenderingContext2D
@@ -29,6 +30,7 @@ interface Env {
   headTilt: number
   detail: boolean
   blink: number
+  rig: ReturnType<typeof poseRig>
 }
 const TAU = Math.PI * 2
 type Bounds = [number, number, number, number]
@@ -45,6 +47,7 @@ const FALLBACK_PROPORTIONS: PetProportions = {
 export function drawPet(
   ctx: CanvasRenderingContext2D, width: number, height: number, dpr: number,
   state: PetVisualState, time: number, yaw = 0,
+  standing = state.appearance?.pose === 'stand' ? 1 : 0,
 ): void {
   const style = getStyle(state.style)
   const colors = gradeColors(state.appearance?.colors ?? FALLBACK_COLORS, style.grade)
@@ -86,12 +89,15 @@ export function drawPet(
     outlineWidth: ({ kawaii: 1.25, anime: 1.55, plush: 0, glass: 1.05 }[style.id]) * (state.finish?.outlineWidth ?? 1),
     action, headTilt: idle.head, detail: tier !== 'low',
     blink: drag || knownAction === 'sleep' ? 1 : naturalBlink(time, reduced),
+    rig: poseRig(standing),
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, width, height)
   ctx.save()
   const unit = Math.min(width, height) / 310
-  ctx.translate(width / 2 - 12 * unit + yaw * 18, height * 0.64)
+  // Anime's larger head needs a little extra room above long ears when upright.
+  const headroom = style.id === 'anime' ? env.rig.headroom * unit : 0
+  ctx.translate(width / 2 - 12 * unit + yaw * 18, height * 0.64 + headroom)
   ctx.scale(unit, unit)
   drawPlatform(env)
   ctx.rotate(env.pose.lean + yaw * 0.16)
@@ -103,10 +109,11 @@ export function drawPet(
   ctx.translate(0, -floor)
   const seated = !['walk', 'jump', 'working', 'dragged'].includes(action)
   drawTail(env)
+  drawHindLegs(env)
   drawBody(env, seated)
   drawPaws(env, seated)
   ctx.save()
-  ctx.translate(0, -53)
+  ctx.translate(0, env.rig.headY)
   ctx.rotate(env.headTilt)
   ctx.scale(proportions.headScale, proportions.headScale)
   drawEars(env)
@@ -248,7 +255,7 @@ function drawPlatform({ ctx, style, pose, proportions }: Env): void {
 function drawTail(env: Env): void {
   const { ctx, colors: c, proportions: p, pose, parts } = env
   if (parts.tail === 'none') return
-  ctx.save(); ctx.translate(39, 51)
+  ctx.save(); ctx.translate(env.rig.tailX, env.rig.tailY)
   ctx.rotate(pose.tailWag * 0.55 + pose.tailLift * 0.16); ctx.scale(p.tailScale, p.tailScale)
   if (parts.tail === 'thin') {
     paint(env, () => {
@@ -300,6 +307,7 @@ function drawTail(env: Env): void {
 function drawBody(env: Env, seated: boolean): void {
   const { ctx, proportions: p, colors: c } = env
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
+  ctx.translate(0, env.rig.bodyY); ctx.scale(env.rig.bodyWidth, 1)
   paint(env, () => {
     ctx.moveTo(-25, -11); ctx.bezierCurveTo(-43, -2, -48, 29, -47, 42)
     ctx.bezierCurveTo(-49, 80, 45, 83, 46, 45); ctx.bezierCurveTo(46, 22, 38, -4, 25, -11); ctx.closePath()
@@ -323,6 +331,7 @@ function drawBody(env: Env, seated: boolean): void {
     ctx.bezierCurveTo(-36, 6, -35, -1, -29, -9); ctx.closePath()
   }, c.belly, 0.3, [-35, -15, 70, 43])
   if (!seated) {
+    ctx.globalAlpha *= 1 - env.rig.stand
     ctx.strokeStyle = withAlpha(env.outline, 0.3); ctx.lineWidth = 0.8
     ctx.beginPath(); ctx.moveTo(0, 46); ctx.lineTo(0, 61); ctx.stroke()
   }
@@ -584,17 +593,19 @@ function drawPaws(env: Env, seated: boolean): void {
   const { ctx, colors: c, proportions: p, pose } = env
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
   for (const side of [-1, 1]) {
-    ctx.save(); ctx.translate(side * 39, 61 + (seated ? 0 : Math.sin(pose.pawPhase) * side * 5)); ctx.rotate(side * 0.23)
+    ctx.save(); ctx.translate(side * env.rig.footX, env.rig.footY + (seated ? 0 : Math.sin(pose.pawPhase) * side * 5))
+    ctx.rotate(side * (0.23 - 0.18 * env.rig.stand))
+    ctx.scale(env.rig.footWidth, env.rig.footHeight)
     ellipse(env, 0, 0, 18, 21, c.body); ellipse(env, 0, 3, 13.5, 16, c.belly, 0)
     ellipse(env, 0, 7, 6.8, 7, mixHex(c.blush, '#ef9b91', 0.25), 0)
     for (const [x, y] of [[-7, -3], [0, -6], [7, -3]]) ellipse(env, x!, y!, 2.6, 3.2, c.blush, 0)
     ctx.restore()
   }
   for (const side of [-1, 1]) {
-    ctx.save(); ctx.translate(side * (seated ? 21 : 19), seated ? 25 : 14)
+    ctx.save(); ctx.translate(side * ((seated ? 21 : 19) + env.rig.armSpread), (seated ? 25 : 14) + env.rig.armLift)
     if ((pose.wave > 0 || env.emotion === 'angry') && side < 0) {
       ctx.rotate(1.75 + Math.sin(env.time * 7) * 0.15 * pose.wave)
-    } else ctx.rotate(side * 0.13)
+    } else ctx.rotate(side * (0.13 - 0.25 * env.rig.stand))
     if (seated) {
       ctx.scale(side, 1)
       paint(env, () => {
@@ -613,6 +624,7 @@ function drawPaws(env: Env, seated: boolean): void {
       ctx.restore()
       continue
     }
+    ctx.scale(1, 1 - 0.28 * env.rig.stand)
     paint(env, () => {
       ctx.moveTo(-9, 0); ctx.bezierCurveTo(-14, 13, -10, 31, -10, 41)
       ctx.bezierCurveTo(-12, 56, 12, 56, 12, 41); ctx.quadraticCurveTo(13, 16, 7, 3)
@@ -627,6 +639,24 @@ function drawPaws(env: Env, seated: boolean): void {
   }
   ctx.restore()
 }
+/** Short weight-bearing haunches behind the belly, separate from the forward-facing feet. */
+function drawHindLegs(env: Env): void {
+  if (env.rig.stand === 0) return
+  const { ctx, proportions: p, colors: c, pose } = env
+  ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
+  ctx.globalAlpha *= env.rig.stand
+  for (const side of [-1, 1]) {
+    const step = Math.sin(pose.pawPhase) * side * 5
+    ctx.save(); ctx.translate(side * env.rig.legX, step)
+    paint(env, () => {
+      ctx.moveTo(-13, 43); ctx.quadraticCurveTo(-17, 55, -13, 70)
+      ctx.bezierCurveTo(-10, 79, 12, 78, 14, 68)
+      ctx.quadraticCurveTo(17, 55, 11, 43); ctx.closePath()
+    }, c.body, 0.8, [-16, 43, 33, 35])
+    ctx.restore()
+  }
+  ctx.restore()
+}
 function applyChannels(pose: BodyPose, channels: PetVisualState['channels']): BodyPose {
   const next = { ...pose }
   const wag = channelValue(channels, 'bone-tail', 'rotation.y')
@@ -637,12 +667,14 @@ function applyChannels(pose: BodyPose, channels: PetVisualState['channels']): Bo
   if (spark !== undefined) next.sparkle = Math.max(next.sparkle, spark)
   return next
 }
-/** Map logical sockets onto the seated rig; head attachments share its tilt. */
-function anchor(socket: AttachmentSocket): { x: number; y: number; head: boolean } {
+/** Map logical sockets onto the rig; head attachments share its tilt. */
+function anchor(socket: AttachmentSocket, rig: Env['rig']): { x: number; y: number; head: boolean } {
   const positions: Record<string, [number, number, boolean]> = {
     head: [0, -58, true], 'ear-l': [-48, -52, true], 'ear-r': [48, -52, true],
-    neck: [0, 9, false], chest: [0, 30, false], back: [0, 22, false], tail: [74, 43, false],
-    'paw-l': [-26, 63, false], 'paw-r': [26, 63, false], muzzle: [0, 27, true], face: [0, 1, true],
+    neck: [0, 9 + rig.bodyY, false], chest: [0, 30 + rig.bodyY, false], back: [0, 22 + rig.bodyY, false],
+    tail: [74 + rig.tailX - 39, 43 + rig.tailY - 51, false],
+    'paw-l': [-26 + rig.stand * 3, 63 + rig.stand * 5, false],
+    'paw-r': [26 - rig.stand * 3, 63 + rig.stand * 5, false], muzzle: [0, 27, true], face: [0, 1, true],
   }
   const at = positions[socket.id]
   return at ? { x: at[0], y: at[1], head: at[2] }
@@ -651,7 +683,7 @@ function anchor(socket: AttachmentSocket): { x: number; y: number; head: boolean
 function drawAccessories(env: Env, head: boolean): void {
   const { ctx } = env
   for (const item of env.accessories) {
-    const at = anchor(env.sockets?.find(s => s.id === item.socket) ?? socketForAccessory(item.kind, item.socket))
+    const at = anchor(env.sockets?.find(s => s.id === item.socket) ?? socketForAccessory(item.kind, item.socket), env.rig)
     if (at.head !== head) continue
     const color = item.color ?? '#8ed9cc'
     ctx.save(); ctx.translate(at.x, at.y)
@@ -694,7 +726,7 @@ function drawAccessories(env: Env, head: boolean): void {
     ctx.restore()
   }
   for (const prop of env.props ?? []) {
-    const at = anchor(env.sockets?.find(s => s.id === prop.socket) ?? socketForAccessory('prop', prop.socket))
+    const at = anchor(env.sockets?.find(s => s.id === prop.socket) ?? socketForAccessory('prop', prop.socket), env.rig)
     if (at.head === head) ellipse(env, at.x, at.y, 6, 6, prop.color ?? '#7af0ff', 0.5)
   }
 }
