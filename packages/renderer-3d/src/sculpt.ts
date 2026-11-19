@@ -11,13 +11,15 @@ export function sculptedForm(kind: 'head' | 'body' | 'limb' | 'foot', detail = 4
       z = p.getZ(i)
     if (kind === 'head') {
       const cheek = Math.exp(-(((y + 0.36) / 0.24) ** 2))
-      const px = x * (0.6 + cheek * 0.12 + 0.12 * Math.exp(-(((y + 0.72) / 0.25) ** 2))),
+      const px = x * (0.6 + cheek * 0.095),
         py = y * 0.51
       const muzzle =
-        z > 0 ? 0.1 * Math.exp(-((px / 0.3) ** 2) - ((py + 0.22) / 0.19) ** 2) * Math.min(1, z * 4) : 0
+        z > 0 ? 0.13 * Math.exp(-((px / 0.3) ** 2) - ((py + 0.22) / 0.19) ** 2) * Math.min(1, z * 4) : 0
       const fluff =
-        (0.025 * Math.exp(-(((py + 0.16) / 0.028) ** 2)) + 0.018 * Math.exp(-(((py + 0.245) / 0.025) ** 2))) *
-        Math.abs(x) ** 6
+        (0.10 * Math.exp(-(((py + 0.16) / 0.021) ** 2)) +
+          0.105 * Math.exp(-(((py + 0.245) / 0.020) ** 2)) +
+          0.10 * Math.exp(-(((py + 0.32) / 0.020) ** 2))) *
+        Math.abs(x) ** 4
       p.setXYZ(i, px + Math.sign(x) * fluff, py, z * (0.405 + cheek * 0.018) + muzzle)
     } else if (kind === 'body') {
       const pear = 1 - y * 0.23
@@ -93,15 +95,15 @@ export function pillowSurface(
   return surface(positions, uv, indices)
 }
 
-/** One continuous curved tail with a material boundary following a jagged cream tip. */
+/** One full, curved tail with a gently swept, continuous cream-tip boundary. */
 export function sweptTail(thin = false, detail = 48): THREE.BufferGeometry {
   const curve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, 0, 0),
     new THREE.Vector3(0.29, 0.03, -0.1),
-    new THREE.Vector3(0.56, 0.22, -0.06),
-    new THREE.Vector3(0.65, 0.55, 0),
-    new THREE.Vector3(0.6, 0.79, 0.025),
-    new THREE.Vector3(0.48, 0.88, 0.04),
+    new THREE.Vector3(0.59, 0.24, -0.09),
+    new THREE.Vector3(0.70, 0.57, -0.015),
+    new THREE.Vector3(0.63, 0.83, 0.025),
+    new THREE.Vector3(0.48, 0.94, 0.04),
   ])
   const radial = 24,
     frames = curve.computeFrenetFrames(detail, false)
@@ -116,17 +118,20 @@ export function sweptTail(thin = false, detail = 48): THREE.BufferGeometry {
       split = Math.round(detail * 0.65) / detail
     for (let i = 0; i <= radial; i++) {
       const a = (i / radial) * Math.PI * 2
-      const seam = thin ? split : 0.65 + 0.045 * Math.cos(a * 5)
+      const seam = thin ? split : 0.69 + 0.014 * Math.cos(a)
       const t = row <= split ? (row / split) * seam : seam + ((row - split) / (1 - split)) * (1 - seam)
       const center = curve.getPointAt(t),
-        frame = Math.min(detail, Math.round(t * detail))
+        frame = Math.min(detail - 1, Math.floor(t * detail)),
+        fraction = t * detail - frame,
+        normal = frames.normals[frame]!.clone().lerp(frames.normals[frame + 1]!, fraction).normalize(),
+        binormal = frames.binormals[frame]!.clone().lerp(frames.binormals[frame + 1]!, fraction).normalize()
       const radius = thin
         ? 0.048 * Math.sin(Math.PI * (0.1 + t * 0.9))
-        : 0.038 * (1 - t) + 0.225 * Math.sin(Math.PI * t) ** 0.8
+        : 0.038 * (1 - t) + 0.245 * Math.sin(Math.PI * t) ** 0.78
       const v = center
         .clone()
-        .addScaledVector(frames.normals[frame]!, Math.cos(a) * Math.max(0.001, radius))
-        .addScaledVector(frames.binormals[frame]!, Math.sin(a) * Math.max(0.001, radius) * 0.84)
+        .addScaledVector(normal, Math.cos(a) * Math.max(0.001, radius))
+        .addScaledVector(binormal, Math.sin(a) * Math.max(0.001, radius) * 0.84)
       positions.push(v.x, v.y, v.z)
       uv.push(i / radial, t)
       if (j < detail && i < radial) {

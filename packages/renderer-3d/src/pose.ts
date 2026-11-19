@@ -1,0 +1,56 @@
+import type { PetPose } from '@yk-pet/core'
+
+export const POSE_DURATION = 0.6
+export interface PoseTransition {
+  value: number
+  from: number
+  target: number
+  elapsed: number
+}
+
+export function initialPose(pose?: PetPose): PoseTransition {
+  const value = pose === 'stand' ? 1 : 0
+  return { value, from: value, target: value, elapsed: POSE_DURATION }
+}
+
+/** Pure, time-based easing. Retarget from the current blend, including mid-transition reversals. */
+export function advancePose(
+  previous: PoseTransition,
+  pose: PetPose | undefined,
+  dt: number,
+  reducedMotion = false,
+): PoseTransition {
+  const target = pose === 'stand' ? 1 : 0
+  if (reducedMotion) return initialPose(pose)
+  const changed = target !== previous.target
+  const from = changed ? previous.value : previous.from
+  const elapsed = Math.min(POSE_DURATION, (changed ? 0 : previous.elapsed) + Math.max(0, dt))
+  const t = elapsed / POSE_DURATION
+  const ease = t * t * (3 - 2 * t)
+  return { value: from + (target - from) * ease, from, target, elapsed }
+}
+
+/** Shared rig coordinates; feet stay on the ground as the torso and forepaws rise. */
+export function interpolateRig(standing: number) {
+  const t = Math.max(0, Math.min(1, standing))
+  const mix = (sit: number, stand: number) => sit + (stand - sit) * t
+  return {
+    headY: mix(1.12, 1.53),
+    chestY: mix(0.49, 0.84),
+    bodyWidth: mix(1, 0.88),
+    bodyHeight: mix(1, 1.12),
+    pawX: mix(0.175, 0.37),
+    pawY: mix(0.325, 0.80),
+    pawZ: mix(0.265, 0.10),
+    pawRoll: mix(0, 0.13),
+    footX: mix(0.32, 0.205),
+    footY: mix(0.225, 0.18),
+    footZ: mix(0.21, 0.12),
+    footRoll: mix(0.22, 0.045),
+    footHeight: mix(1, 0.82),
+    legScale: t,
+    tailY: mix(0.24, 0.40),
+    tailZ: mix(-0.2, -0.27),
+    tailRoll: mix(0, -0.12),
+  }
+}
