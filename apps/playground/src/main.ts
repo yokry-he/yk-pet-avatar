@@ -49,6 +49,8 @@ pet.preference = (query.get('renderer') as RendererPreference) || '2d'
 pet.config = { behavior: { autonomous: true } }
 const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
+const poseParam = query.get('pose')
+if (poseParam === 'sit' || poseParam === 'stand') pet.setConfig({ appearance: { pose: poseParam } })
 const emotionParam = query.get('emotion')
 if (emotionParam) window.setTimeout(() => pet.setEmotion(emotionParam), 300)
 applyTheme()

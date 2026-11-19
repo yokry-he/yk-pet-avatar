@@ -15,6 +15,10 @@ export type Species = (typeof SPECIES)[number]
 export const EAR_STYLES = ['pointy', 'round', 'long', 'floppy', 'none'] as const
 export type EarStyle = (typeof EAR_STYLES)[number]
 
+/** Body pose. `sit` is the v0.1 default; `stand` is upright on the hind legs. */
+export const POSES = ['sit', 'stand'] as const
+export type PetPose = (typeof POSES)[number]
+
 export const TAIL_STYLES = ['fluffy', 'thin', 'puff', 'bob', 'none'] as const
 export type TailStyle = (typeof TAIL_STYLES)[number]
 
@@ -199,6 +203,8 @@ export interface PetConfig {
     parts: PetParts
     accessories: Accessory[]
     finish?: FinishOverrides
+    /** Body pose; omitted means `sit`. */
+    pose?: PetPose
   }
   /** Visual style preset. Default is soft kawaii (`kawaii`, owner index 1). */
   style: PetStyleId

@@ -16,6 +16,7 @@ import {
   PET_ACTIONS,
   SCHEMA_VERSION,
   SPECIES,
+  POSES,
   TAIL_STYLES,
   type Accessory,
   type AccessoryKind,
@@ -25,6 +26,7 @@ import {
   type PetColors,
   type PetConfig,
   type PetParts,
+  type PetPose,
   type PetProportions,
   type PetStats,
   type FinishOverrides,
@@ -540,6 +542,9 @@ export function parsePetConfig(input: unknown = {}): ParseResult {
       parts: readParts(issues, appearanceIn?.parts, fallback.appearance.parts),
       accessories: readAccessories(issues, appearanceIn?.accessories, fallback.appearance.accessories),
       finish: readFinish(issues, appearanceIn?.finish),
+      ...(appearanceIn?.pose !== undefined || fallback.appearance.pose
+        ? { pose: readEnum(issues, appearanceIn?.pose, POSES, 'appearance.pose', fallback.appearance.pose ?? 'sit') as PetPose }
+        : {}),
     },
     behavior: readBehavior(issues, source.behavior, fallback.behavior),
     style: readStyle(issues, source.style, fallback.style),
