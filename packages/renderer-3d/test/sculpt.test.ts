@@ -180,7 +180,10 @@ describe('procedural rig and materials', () => {
     pet.dispose()
   })
   it.each(['low', 'medium', 'high'] as const)('gates glass halos at %s quality and disposes them once', (tier) => {
+    // Pin device capability so the result does not depend on the CI runner's core count.
+    vi.stubGlobal('navigator', { hardwareConcurrency: 8, deviceMemory: 8 })
     const pet = createProceduralPet(state('glass'), tier)
+    vi.unstubAllGlobals()
     const resources = new Set<THREE.Material | THREE.BufferGeometry>()
     let halos = 0
     pet.group.traverse((node) => {
