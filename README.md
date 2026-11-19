@@ -100,6 +100,8 @@ pnpm add @yk-pet/3d
 - 3D 自动取景，整只宠物带耳朵都在画面内
 - 修复 v1 毛壳着色器 objectNormal 编译错误
 - playground 支持 ?style= 和 ?emotion= 参数用于截图
+- 新增姿势 appearance.pose: 'sit'（默认，不写时等同 sit，向后兼容）| 'stand'（用后腿站立）。2D 和 3D、四种风格都支持；运行时切换有约 0.6 秒的平滑过渡，reducedMotion 时直接切换。示例代码: pet.setConfig({ appearance: { pose: 'stand' } })；playground 用 ?pose=stand，简洁模式外观面板里有 坐/站 切换。导出 POSES 和 PetPose 类型。
+- 3D 改进：圆润的奶油色口鼻 + 脸颊绒毛；anime 白色区域干净不发灰；happy 是 ^ ^ 眯眼，love 是爱心眼；尾巴尖过渡平滑；glass 有低成本的发光光晕，弱设备/低画质时关闭。
 
 ## Agent API
 

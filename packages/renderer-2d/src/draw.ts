@@ -102,7 +102,7 @@ export function drawPet(
   ctx.translate(width / 2 - 12 * unit + yaw * 18, height * 0.64 + headroom)
   ctx.scale(unit, unit)
   drawPlatform(env)
-  ctx.rotate(env.pose.lean + yaw * 0.16)
+  ctx.rotate(env.pose.lean * env.rig.stepWeight + yaw * 0.16)
   if (pose.sleep > 0) ctx.rotate(-0.2 * pose.sleep)
   // Anchor squash/stretch at the feet so breathing does not float above the shadow.
   const floor = env.rig.floor * proportions.bodyScale * proportions.bodyLength
@@ -638,12 +638,28 @@ function drawPaws(env: Env, seated: boolean): void {
   const { ctx, colors: c, proportions: p, pose } = env
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
   for (const side of [-1, 1]) {
-    ctx.save(); ctx.translate(side * env.rig.footX, env.rig.footY + (seated ? 0 : Math.sin(pose.pawPhase) * side * 5))
+    ctx.save(); ctx.translate(side * env.rig.footX,
+      env.rig.footY + (seated ? 0 : Math.sin(pose.pawPhase) * side * 5 * env.rig.stepWeight))
     ctx.rotate(side * env.rig.footAngle)
     ctx.scale(env.rig.footWidth, env.rig.footHeight)
-    ellipse(env, 0, 0, 18, 21, c.body); ellipse(env, 0, 3, 13.5, 16, c.belly, 0)
-    ellipse(env, 0, 7, 6.8, 7, mixHex(c.blush, '#ef9b91', 0.25), 0)
-    for (const [x, y] of [[-7, -3], [0, -6], [7, -3]]) ellipse(env, x!, y!, 2.6, 3.2, c.blush, 0)
+    ellipse(env, 0, 0, 18, 21, c.body)
+    if (env.rig.stand < 1) {
+      ctx.save(); ctx.globalAlpha *= 1 - env.rig.stand
+      ellipse(env, 0, 3, 13.5, 16, c.belly, 0)
+      ellipse(env, 0, 7, 6.8, 7, mixHex(c.blush, '#ef9b91', 0.25), 0)
+      for (const [x, y] of [[-7, -3], [0, -6], [7, -3]]) ellipse(env, x!, y!, 2.6, 3.2, c.blush, 0)
+      ctx.restore()
+    }
+    if (env.rig.stand > 0 && env.glassPass !== 'mask') {
+      ctx.save(); ctx.globalAlpha *= env.rig.stand
+      ctx.strokeStyle = env.style.id === 'glass' ? 'rgba(195,249,255,0.75)'
+        : withAlpha(env.outline, env.style.id === 'plush' ? 0.35 : 0.6)
+      ctx.lineWidth = 0.9; ctx.lineCap = 'round'
+      for (const x of [-5, 5]) {
+        ctx.beginPath(); ctx.moveTo(x, -4); ctx.quadraticCurveTo(x - 1, 2, x, 8); ctx.stroke()
+      }
+      ctx.restore()
+    }
     ctx.restore()
   }
   for (const side of [-1, 1]) {
@@ -692,14 +708,16 @@ function drawHindLegs(env: Env, seated: boolean): void {
   ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
   ctx.globalAlpha *= env.rig.stand
   for (const side of [-1, 1]) {
-    const step = seated ? 0 : Math.sin(pose.pawPhase) * side * 5
+    const step = seated ? 0 : Math.sin(pose.pawPhase) * side * 5 * env.rig.stepWeight
     ctx.save(); ctx.translate(side * env.rig.legX, step)
     paint(env, () => {
-      const extension = 12 * env.rig.stand
-      ctx.moveTo(-13, 40); ctx.quadraticCurveTo(-17, 55, -11, 70 + extension)
-      ctx.bezierCurveTo(-8, 79 + extension, 11, 78 + extension, 12, 68 + extension)
-      ctx.quadraticCurveTo(17, 55, 11, 40); ctx.closePath()
-    }, c.body, 0.8, [-16, 40, 33, 39 + 12 * env.rig.stand])
+      const bottom = 69 + 9 * env.rig.stand
+      ctx.moveTo(-8, 40)
+      ctx.bezierCurveTo(-19, 43, -18, bottom - 14, -11, bottom - 5)
+      ctx.bezierCurveTo(-9, bottom + 1, 9, bottom + 1, 11, bottom - 5)
+      ctx.bezierCurveTo(18, bottom - 16, 17, 43, 8, 40)
+      ctx.quadraticCurveTo(0, 37, -8, 40); ctx.closePath()
+    }, c.body, 0.8, [-19, 37, 38, 33 + 9 * env.rig.stand])
     if (env.glassPass === 'markings') {
       ctx.strokeStyle = 'rgba(209,252,255,0.38)'; ctx.lineWidth = 1; ctx.lineCap = 'round'
       ctx.beginPath(); ctx.moveTo(-8, 55); ctx.quadraticCurveTo(-9, 64, -7, 69); ctx.stroke()

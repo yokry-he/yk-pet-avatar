@@ -74,8 +74,12 @@ describe('Canvas body pose transition', () => {
     const hip = standing.bodyY + 74 * standing.bodyHeight
     const footTop = standing.footY - 21 * standing.footHeight
     expect(footTop - hip).toBeGreaterThan(10)
-    expect(standing.footX * 2 - 36 * standing.footWidth).toBeGreaterThan(20)
-    expect(standing.footAngle).toBeGreaterThan(0.15)
+    expect(standing.footX * 2 - 36 * standing.footWidth).toBeGreaterThan(18)
+    expect(standing.footAngle).toBeGreaterThan(0)
+    expect(standing.footAngle).toBeLessThan(0.15)
+    expect(21 * standing.footHeight).toBeLessThan(18 * standing.footWidth * 0.6)
+    expect(standing.stepWeight).toBe(0)
+    expect(poseRig(0).stepWeight).toBe(1)
     expect(standing.armScale).toBeLessThan(0.8)
     // The palm center rests below the upper half of the belly, rather than near the chin.
     expect(25 + standing.armLift + 21 * standing.armScale).toBeGreaterThan(30)

@@ -24,6 +24,8 @@ Playground query flags: `?theme=soft|pro|glass&mode=simple|pro&lang=zh|en&render
 - 3D auto-framing keeps the whole pet, including ears, in frame
 - fixed the v1 fur shell shader `objectNormal` compile error
 - playground supports `?style=` and `?emotion=` params for screenshots
+- New pose `appearance.pose`: `'sit'` (default, omitted means sit, backward-compatible) | `'stand'` (standing on hind legs). Supported in 2D and 3D across all four styles; switching at runtime has about a 0.6 s smooth transition, or an instant swap when `reducedMotion` is enabled. Example: `pet.setConfig({ appearance: { pose: 'stand' } })`; playground uses `?pose=stand`, and the simple-mode appearance panel has a sit/stand toggle. Exports `POSES` and `PetPose` type.
+- 3D improvements: rounded cream muzzle + cheek fluff; anime white areas stay clean without grey tint; happy uses ^ ^ squinting eyes, love uses heart eyes; smoother tail-tip transition; glass has a low-cost glow halo that turns off on weak devices / low quality.
 
 | id | index | 2D | 3D |
 | --- | --- | --- | --- |
