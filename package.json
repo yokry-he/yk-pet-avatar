@@ -1,0 +1,35 @@
+{
+  "name": "yk-pet-avatar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Embeddable, customizable 2D + 3D virtual pet avatar SDK.",
+  "author": "Yokry He",
+  "license": "MIT",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs && pnpm --filter @yk-pet/playground build",
+    "build:packages": "node scripts/build.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "pnpm --filter @yk-pet/playground dev",
+    "playground": "pnpm --filter @yk-pet/playground dev"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/three": "0.170.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.170.0",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.8",
+    "vue": "^3.5.13"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "yk-pet-electron-example",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": { "start": "electron ." }
+}
