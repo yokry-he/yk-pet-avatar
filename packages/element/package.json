@@ -1,0 +1,38 @@
+{
+  "name": "@yk-pet/element",
+  "version": "0.1.0",
+  "description": "Custom element <yk-pet> with adaptive 2D/3D rendering.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Yokry He",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yokry-he/yk-pet-avatar.git",
+    "directory": "packages/element"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/yk-pet.global.js",
+  "jsdelivr": "./dist/yk-pet.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": true,
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@yk-pet/2d": "workspace:*",
+    "@yk-pet/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@yk-pet/3d": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@yk-pet/3d": { "optional": true }
+  }
+}

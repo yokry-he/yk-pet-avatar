@@ -1,0 +1,32 @@
+{
+  "name": "@yk-pet/3d",
+  "version": "0.1.0",
+  "description": "Lazy-loaded Three.js renderer for yk-pet-avatar, with procedural styles and glTF.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Yokry He",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yokry-he/yk-pet-avatar.git",
+    "directory": "packages/renderer-3d"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/index.global.js",
+  "jsdelivr": "./dist/index.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@yk-pet/core": "workspace:*",
+    "three": "^0.170.0"
+  }
+}

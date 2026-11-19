@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>小云工坊 · yk-pet-avatar</title>
+    <script>
+      try {
+        const saved = JSON.parse(localStorage.getItem('yk-pet-editor') || '{}')
+        const query = new URLSearchParams(location.search)
+        const theme = query.get('theme') || saved.theme || 'soft'
+        const mode = query.get('mode') || saved.mode || 'simple'
+        const lang = query.get('lang') || saved.lang || 'zh'
+        document.documentElement.dataset.theme = theme
+        document.documentElement.dataset.mode = mode
+        document.documentElement.dataset.lang = lang
+        document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN'
+      } catch (error) { /* keep defaults */ }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

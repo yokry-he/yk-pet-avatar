@@ -1,0 +1,18 @@
+{
+  "name": "@yk-pet/playground",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@yk-pet/core": "workspace:*",
+    "@yk-pet/element": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  }
+}

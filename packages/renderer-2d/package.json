@@ -1,0 +1,29 @@
+{
+  "name": "@yk-pet/2d",
+  "version": "0.1.0",
+  "description": "Layered canvas renderer for yk-pet-avatar. Implements the yk-pets PetRenderer protocol.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Yokry He",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yokry-he/yk-pet-avatar.git",
+    "directory": "packages/renderer-2d"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@yk-pet/core": "workspace:*"
+  }
+}

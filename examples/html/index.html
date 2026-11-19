@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>yk-pet · HTML</title>
+    <style>html,body{margin:0;height:100%;background:#fffaf6} yk-pet{display:block;height:100vh}</style>
+  </head>
+  <body>
+    <!-- 先在仓库根目录执行 pnpm build，再用静态服务器打开本页。 -->
+    <script src="../../packages/element/dist/yk-pet.global.js"></script>
+    <yk-pet preference="2d" style="width:100%;height:100vh"></yk-pet>
+    <script>
+      const pet = document.querySelector('yk-pet')
+      pet.addEventListener('yk-ready', () => pet.say('你好，我是小云'))
+    </script>
+  </body>
+</html>
