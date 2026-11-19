@@ -42,9 +42,11 @@ describe('pose interpolation', () => {
     expect(stand.headY).toBeGreaterThan(sit.headY)
     expect(stand.bodyWidth).toBeLessThan(sit.bodyWidth)
     expect(stand.pawY).toBeGreaterThan(sit.pawY)
-    expect(stand.footY - 0.2 * stand.footHeight).toBeGreaterThan(0)
-    for (const key of Object.keys(sit) as (keyof typeof sit)[])
-      expect(halfway[key]).toBeCloseTo((sit[key] + stand[key]) / 2)
+    expect(stand.footPitch).toBeCloseTo(Math.PI / 2)
+    expect(stand.footY - 0.15 * stand.footDepth).toBeGreaterThan(0)
+    for (const key of Object.keys(sit) as (keyof typeof sit)[]) {
+      if (key !== 'footY') expect(halfway[key]).toBeCloseTo((sit[key] + stand[key]) / 2)
+    }
     expect(interpolateRig(-1)).toEqual(sit)
     expect(interpolateRig(2)).toEqual(stand)
   })

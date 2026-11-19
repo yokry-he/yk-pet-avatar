@@ -107,6 +107,12 @@ describe('procedural rig and materials', () => {
           const bounds = visualBounds(foot)
           expect(bounds.min.y).toBeGreaterThan(0)
           expect(bounds.min.y).toBeLessThan(0.03)
+          const soleNormal = new THREE.Vector3(0, 0, 1).transformDirection(foot.matrixWorld)
+          expect(soleNormal.y).toBeLessThan(-0.99)
+          expect(foot.getObjectByName('hind-sole-pads')!.visible).toBe(false)
+          expect(foot.getObjectByName('hind-toe-splits')!.visible).toBe(true)
+          const torso = visualBounds(pet.group.getObjectByName('mesh-body')!)
+          expect(torso.min.y - bounds.max.y).toBeGreaterThan(0.10)
         }
         pet.update({ ...next, emotion: 'happy' }, 1)
         expect(pet.group.getObjectByName('eye-happy-arc')!.visible).toBe(true)
@@ -140,6 +146,37 @@ describe('procedural rig and materials', () => {
     expect(pet.poseBlend).toBe(0)
     pet.update({ ...stand, reducedMotion: true }, 0.9)
     expect(pet.poseBlend).toBe(1)
+    pet.dispose()
+  })
+  it('keeps the feet above the floor throughout the transition and restores seated soles', () => {
+    const sit = { ...state(), reducedMotion: false }
+    const stand = { ...sit, appearance: { ...sit.appearance!, pose: 'stand' as const } }
+    const pet = createProceduralPet(sit, 'low')
+    pet.update(stand, 0)
+    for (let i = 1; i <= 12; i++) {
+      pet.update(stand, i * 0.05)
+      pet.group.updateMatrixWorld(true)
+      pet.group.traverse((foot) => {
+        if (foot.name !== 'mesh-hind-foot') return
+        // Rotated local bounding boxes include empty corners; check the actual surface vertices.
+        foot.traverseVisible((node) => {
+          const mesh = node as THREE.Mesh
+          if (!mesh.geometry) return
+          const position = mesh.geometry.getAttribute('position')
+          const vertex = new THREE.Vector3()
+          for (let j = 0; j < position.count; j++)
+            expect(vertex.fromBufferAttribute(position, j).applyMatrix4(mesh.matrixWorld).y).toBeGreaterThan(0)
+        })
+      })
+    }
+    pet.update({ ...sit, reducedMotion: true }, 1)
+    pet.group.traverse((node) => {
+      if (node.name !== 'mesh-hind-foot') return
+      expect(node.rotation.x).toBe(0)
+      expect(node.scale.toArray()).toEqual([1, 1, 1])
+      expect(node.getObjectByName('hind-sole-pads')!.visible).toBe(true)
+      expect(node.getObjectByName('hind-toe-splits')!.visible).toBe(false)
+    })
     pet.dispose()
   })
   it.each(['low', 'medium', 'high'] as const)('gates glass halos at %s quality and disposes them once', (tier) => {

@@ -34,20 +34,32 @@ export function advancePose(
 export function interpolateRig(standing: number) {
   const t = Math.max(0, Math.min(1, standing))
   const mix = (sit: number, stand: number) => sit + (stand - sit) * t
+  const footPitch = mix(0, Math.PI / 2)
+  const footRoll = mix(0.22, 0)
+  const footHeight = mix(1, 1.12)
+  const footDepth = mix(1, 0.67)
+  // Support the rotating ellipsoid while it rolls from a raised sole onto the ground.
+  const footSupport = Math.hypot(
+    0.19 * Math.cos(footPitch) * Math.sin(footRoll),
+    0.2 * footHeight * Math.cos(footPitch) * Math.cos(footRoll),
+    0.15 * footDepth * Math.sin(footPitch),
+  )
   return {
-    headY: mix(1.12, 1.53),
-    chestY: mix(0.49, 0.84),
+    headY: mix(1.12, 1.65),
+    chestY: mix(0.49, 0.96),
     bodyWidth: mix(1, 0.88),
     bodyHeight: mix(1, 1.12),
     pawX: mix(0.175, 0.37),
     pawY: mix(0.325, 0.80),
     pawZ: mix(0.265, 0.10),
     pawRoll: mix(0, 0.13),
-    footX: mix(0.32, 0.205),
-    footY: mix(0.225, 0.18),
-    footZ: mix(0.21, 0.12),
-    footRoll: mix(0.22, 0.045),
-    footHeight: mix(1, 0.82),
+    footX: mix(0.32, 0.235),
+    footY: Math.max(mix(0.225, 0.115), footSupport + 0.012),
+    footZ: mix(0.21, 0.15),
+    footRoll,
+    footPitch,
+    footHeight,
+    footDepth,
     legScale: t,
     tailY: mix(0.24, 0.40),
     tailZ: mix(-0.2, -0.27),

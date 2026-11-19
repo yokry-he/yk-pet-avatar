@@ -325,7 +325,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   tongue.position.set(0, -0.108, 0.021)
   tongue.scale.set(0.063, 0.034, 0.008)
   openMouth.add(tongue)
-  // Hind soles face the viewer. Small toe beans are embedded in the cream pad.
+  // Seated soles face the viewer; standing rotates the feet onto their undersides.
   const beanMat = mat('innerEar')
   if (beanMat instanceof THREE.MeshPhysicalMaterial && style.id === 'glass') {
     beanMat.transmission = 0
@@ -333,27 +333,44 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   }
   const hindFeet: THREE.Mesh[] = []
   const hindLegs: THREE.Mesh[] = []
+  const hindSoles: THREE.Group[] = []
+  const hindToeSplits: THREE.Group[] = []
   for (const side of [-1, 1]) {
     const leg = add(hips, sculptedForm('limb', 28), bodyMat, 'mesh-hind-leg')
-    leg.position.set(side * 0.205, 0.34, 0)
+    leg.position.set(side * 0.235, 0.345, 0.015)
     hindLegs.push(leg)
     const foot = add(hips, sculptedForm('foot', 28), bodyMat, 'mesh-hind-foot')
     hindFeet.push(foot)
     foot.position.set(side * 0.32, 0.225, 0.21)
     foot.rotation.z = side * -0.22
+    const pads = new THREE.Group()
+    pads.name = 'hind-sole-pads'
+    foot.add(pads)
+    hindSoles.push(pads)
     const sole = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 18), creamMat)
     sole.position.set(0, -0.012, 0.112)
     sole.scale.set(0.137, 0.164, 0.05)
-    foot.add(sole)
+    pads.add(sole)
     const bean = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), beanMat)
     bean.position.set(0, -0.057, 0.158)
     bean.scale.set(0.063, 0.067, 0.018)
-    foot.add(bean)
+    pads.add(bean)
     for (let i = 0; i < 3; i++) {
       const toe = new THREE.Mesh(bean.geometry, beanMat)
       toe.scale.set(0.024, 0.032, 0.013)
       toe.position.set((i - 1) * 0.065, 0.054 - Math.abs(i - 1) * 0.012, 0.157)
-      foot.add(toe)
+      pads.add(toe)
+    }
+    const toeSplits = new THREE.Group()
+    toeSplits.name = 'hind-toe-splits'
+    foot.add(toeSplits)
+    hindToeSplits.push(toeSplits)
+    for (const x of [-0.048, 0.048]) {
+      // The foot's local -Z surface becomes its upper surface after the quarter turn.
+      const points = [0.10, 0.135, 0.165, 0.185].map((y) => [
+        x, y, -0.15 * Math.sqrt(Math.max(0, 1 - (x / 0.17) ** 2 - (y / 0.2) ** 2)) - 0.012,
+      ])
+      toeSplits.add(stroke(points, 0.0035, ink))
     }
   }
   const palmPads: THREE.Group[] = []
@@ -559,12 +576,17 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       hindFeet.forEach((foot, i) => {
         const side = i === 0 ? -1 : 1
         foot.position.set(side * rig.footX, rig.footY, rig.footZ)
-        foot.rotation.z = -side * rig.footRoll
-        foot.scale.set(1, rig.footHeight, 1)
+        foot.rotation.set(rig.footPitch, 0, -side * rig.footRoll)
+        foot.scale.set(1, rig.footHeight, rig.footDepth)
+        // Hide the underside at the standing endpoint, including through transparent glass.
+        hindSoles[i]!.visible = transition.value < 0.995
+        hindSoles[i]!.scale.z = 1 - transition.value * 0.8
+        hindToeSplits[i]!.visible = transition.value > 0
+        hindToeSplits[i]!.scale.setScalar(Math.max(0.001, transition.value))
       })
       hindLegs.forEach((leg) => {
         leg.visible = rig.legScale > 0
-        leg.scale.set(1.25, Math.max(0.001, rig.legScale * 0.80), 1.15)
+        leg.scale.set(1.28, Math.max(0.001, rig.legScale * 0.86), 1.2)
       })
       head.scale.setScalar(props.headScale)
       head.rotation.set(
