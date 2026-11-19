@@ -169,15 +169,29 @@ function paint(env: Env, trace: () => void, fill: string, outlineScale = 1,
   ctx.save(); ctx.beginPath(); trace()
   if (mode === 'glass') {
     const gradient = ctx.createLinearGradient(x, y, x + w, y + h * 0.8)
-    gradient.addColorStop(0, 'rgba(122,240,255,0.65)')
-    gradient.addColorStop(0.32, 'rgba(103,189,249,0.35)')
-    gradient.addColorStop(0.65, 'rgba(146,111,245,0.4)')
-    gradient.addColorStop(1, 'rgba(229,174,255,0.72)')
+    gradient.addColorStop(0, 'rgba(112,220,248,0.68)')
+    gradient.addColorStop(0.28, 'rgba(82,151,218,0.4)')
+    gradient.addColorStop(0.56, 'rgba(92,89,195,0.47)')
+    gradient.addColorStop(0.82, 'rgba(169,117,227,0.56)')
+    gradient.addColorStop(1, 'rgba(227,174,250,0.76)')
     ctx.fillStyle = gradient; ctx.fill()
     ctx.save(); ctx.clip()
+    const depth = ctx.createRadialGradient(x + w * 0.63, y + h * 0.63, 0,
+      x + w * 0.63, y + h * 0.63, w * 0.6)
+    depth.addColorStop(0, 'rgba(45,47,128,0.3)')
+    depth.addColorStop(0.5, 'rgba(75,72,164,0.15)')
+    depth.addColorStop(1, 'rgba(75,72,164,0)')
+    ctx.fillStyle = depth; ctx.fillRect(x, y, w, h)
     const glow = ctx.createRadialGradient(x + w * 0.3, y + h * 0.7, 0, x + w * 0.3, y + h * 0.7, w * 0.65)
-    glow.addColorStop(0, 'rgba(137,247,255,0.32)'); glow.addColorStop(1, 'rgba(137,247,255,0)')
-    ctx.fillStyle = glow; ctx.fillRect(x, y, w, h); ctx.restore()
+    glow.addColorStop(0, 'rgba(159,250,255,0.42)')
+    glow.addColorStop(0.4, 'rgba(115,226,250,0.14)')
+    glow.addColorStop(1, 'rgba(137,247,255,0)')
+    ctx.fillStyle = glow; ctx.fillRect(x, y, w, h)
+    // An inset violet edge remains visible on a pale host background under the luminous rim.
+    if (env.outlineWidth > 0 && outlineScale > 0) {
+      ctx.strokeStyle = 'rgba(73,78,149,0.28)'; ctx.lineWidth = 2.4; ctx.stroke()
+    }
+    ctx.restore()
   } else if (mode === 'toon') {
     ctx.fillStyle = fill; ctx.fill()
     ctx.save(); ctx.clip(); ctx.fillStyle = shadeHex(fill, -0.18)
@@ -244,19 +258,42 @@ function drawTail(env: Env): void {
   } else if (parts.tail === 'puff' || parts.tail === 'bob') {
     ellipse(env, 17, 3, parts.tail === 'bob' ? 14 : 23, parts.tail === 'bob' ? 14 : 22, c.accent, 0.6)
   } else {
+    const softTail = env.style.id === 'kawaii' || env.style.id === 'plush'
     const tail = () => {
+      if (softTail) {
+        ctx.moveTo(-8, 12)
+        ctx.bezierCurveTo(29, 43, 89, 25, 91, -18)
+        ctx.bezierCurveTo(92, -41, 84, -54, 94, -60)
+        ctx.quadraticCurveTo(102, -64, 96, -68)
+        ctx.quadraticCurveTo(86, -76, 75, -73)
+        ctx.quadraticCurveTo(59, -80, 42, -63)
+        ctx.quadraticCurveTo(37, -60, 40, -67)
+        ctx.bezierCurveTo(19, -54, 18, -29, 25, -15)
+        ctx.bezierCurveTo(32, 2, 14, 9, -8, 12); ctx.closePath()
+        return
+      }
       ctx.moveTo(-6, 12); ctx.bezierCurveTo(34, 39, 80, 17, 82, -28)
       ctx.quadraticCurveTo(83, -46, 94, -53); ctx.quadraticCurveTo(69, -80, 45, -61)
       ctx.lineTo(48, -68); ctx.quadraticCurveTo(26, -55, 28, -24)
       ctx.bezierCurveTo(31, -3, 16, 6, -6, 12); ctx.closePath()
     }
-    paint(env, tail, c.body, 1, [-8, -72, 104, 104])
+    paint(env, tail, c.body, 1, [-8, -80, 110, 114])
     ctx.save(); ctx.beginPath(); tail(); ctx.clip()
     paint(env, () => {
+      if (softTail) {
+        ctx.moveTo(15, -88); ctx.lineTo(110, -88); ctx.lineTo(110, -31)
+        // Two broad, rounded S-curves let the cream blend into the fluffy plume.
+        ctx.bezierCurveTo(94, -31, 81, -14, 72, -24)
+        ctx.bezierCurveTo(67, -30, 72, -40, 61, -41)
+        ctx.bezierCurveTo(51, -43, 49, -30, 39, -36)
+        ctx.bezierCurveTo(33, -39, 34, -47, 22, -43)
+        ctx.closePath()
+        return
+      }
       ctx.moveTo(22, -77); ctx.lineTo(105, -77); ctx.lineTo(100, -28)
       ctx.lineTo(77, -11); ctx.lineTo(78, -31); ctx.lineTo(63, -18)
       ctx.lineTo(61, -37); ctx.lineTo(45, -28); ctx.lineTo(43, -47); ctx.lineTo(27, -39); ctx.closePath()
-    }, c.accent, 0, [25, -74, 75, 66]); ctx.restore()
+    }, c.accent, 0, [20, -80, 85, 64]); ctx.restore()
   }
   ctx.restore()
 }
@@ -273,6 +310,18 @@ function drawBody(env: Env, seated: boolean): void {
     ctx.bezierCurveTo(24, 34, 16, 54, 0, 62); ctx.bezierCurveTo(-19, 50, -23, 31, -20, 17)
     ctx.lineTo(-27, 19); ctx.lineTo(-22, 10); ctx.closePath()
   }, c.belly, 0, [-27, -4, 54, 68])
+  // A visible neck ruff joins the chin to the chest and gives neck accessories a fabric base.
+  paint(env, () => {
+    ctx.moveTo(-29, -9); ctx.quadraticCurveTo(0, -17, 29, -9)
+    ctx.bezierCurveTo(37, 1, 29, 10, 24, 12)
+    ctx.quadraticCurveTo(31, 18, 20, 16)
+    ctx.quadraticCurveTo(20, 24, 11, 21)
+    ctx.quadraticCurveTo(5, 29, 0, 24)
+    ctx.quadraticCurveTo(-6, 29, -12, 21)
+    ctx.quadraticCurveTo(-22, 25, -22, 17)
+    ctx.quadraticCurveTo(-32, 19, -26, 11)
+    ctx.bezierCurveTo(-36, 6, -35, -1, -29, -9); ctx.closePath()
+  }, c.belly, 0.3, [-35, -15, 70, 43])
   if (!seated) {
     ctx.strokeStyle = withAlpha(env.outline, 0.3); ctx.lineWidth = 0.8
     ctx.beginPath(); ctx.moveTo(0, 46); ctx.lineTo(0, 61); ctx.stroke()
@@ -327,23 +376,34 @@ function headPath(ctx: CanvasRenderingContext2D, fox: boolean): void {
   } else ctx.quadraticCurveTo(-64, 20, -60, -8)
   ctx.bezierCurveTo(-58, -35, -39, -58, 0, -58); ctx.closePath()
 }
+let feltFuzz: Path2D | undefined
+function drawFeltFuzz(env: Env): void {
+  const { ctx, colors } = env
+  if (!feltFuzz) {
+    feltFuzz = new Path2D()
+    for (let i = 0; i < 480; i++) {
+      const a = i / 480 * TAU
+      const length = 0.35 + (Math.sin(i * 123.4) + 1) * 0.3
+      const tangent = Math.sin(i * 37.7) * 0.35
+      const nx = Math.cos(a)
+      const ny = Math.sin(a)
+      feltFuzz.moveTo(nx * 63.7, -1 + ny * 54.7)
+      feltFuzz.quadraticCurveTo(nx * 64.2 - ny * tangent, -1 + ny * 55.2 + nx * tangent,
+        nx * (64 + length) - ny * tangent, -1 + ny * (55 + length) + nx * tangent)
+    }
+  }
+  ctx.save(); ctx.lineWidth = 0.4; ctx.lineCap = 'round'
+  ctx.strokeStyle = withAlpha(mixHex(colors.body, colors.accent, 0.25), 0.38)
+  ctx.shadowColor = withAlpha(colors.body, 0.25); ctx.shadowBlur = 1.4
+  ctx.stroke(feltFuzz); ctx.restore()
+}
 function drawHead(env: Env): void {
   const { ctx, colors: c, species, proportions: p } = env
   const fox = species === 'fox' || species === 'custom'
   const silhouette = () => env.style.id === 'plush'
     ? ctx.ellipse(0, -1, 64, 55, 0, 0, TAU) : headPath(ctx, fox)
   paint(env, silhouette, c.body, 1, [-70, -58, 140, 112])
-  if (env.style.id === 'plush' && env.detail) {
-    ctx.save(); ctx.lineWidth = 0.45
-    for (let i = 0; i < 180; i++) {
-      const a = i / 180 * TAU
-      const length = 1.5 + (Math.sin(i * 123.4) + 1) * 1.1
-      ctx.strokeStyle = i % 3 ? withAlpha(c.body, 0.6) : withAlpha(c.accent, 0.5)
-      ctx.beginPath(); ctx.moveTo(Math.cos(a) * 62, -1 + Math.sin(a) * 53)
-      ctx.lineTo(Math.cos(a) * (64 + length), -1 + Math.sin(a) * (55 + length)); ctx.stroke()
-    }
-    ctx.restore()
-  }
+  if (env.style.id === 'plush' && env.detail) drawFeltFuzz(env)
   ctx.save(); ctx.beginPath(); silhouette(); ctx.clip()
   paint(env, () => {
     ctx.moveTo(-73, 18); ctx.quadraticCurveTo(-54, 6, -40, 18)
@@ -455,7 +515,8 @@ function drawEye(env: Env, x: number, y: number, side: number): void {
   if (emotion === 'excited') {
     star(ctx, -rx * 0.24, -ry * 0.2, rx * 0.5); star(ctx, rx * 0.37, ry * 0.34, rx * 0.25)
   } else {
-    ctx.beginPath(); ctx.ellipse(-rx * 0.3, -ry * 0.4, rx * 0.27, ry * 0.24, 0.3, 0, TAU); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(-rx * 0.3, -ry * 0.4,
+      rx * (style.id === 'anime' ? 0.34 : 0.27), ry * (style.id === 'anime' ? 0.29 : 0.24), 0.3, 0, TAU); ctx.fill()
     ctx.beginPath(); ctx.arc(rx * 0.4, ry * 0.39, rx * 0.13, 0, TAU); ctx.fill()
     if (style.id === 'anime') star(ctx, rx * 0.44, -ry * 0.09, rx * 0.14)
   }
@@ -494,7 +555,7 @@ function drawBrows(env: Env): void {
 }
 function drawMouth(env: Env): void {
   const { ctx, emotion, expression: e } = env
-  ctx.save(); ctx.strokeStyle = env.style.id === 'glass' ? '#5968a5' : mixHex(env.colors.eye, '#885035', 0.3)
+  ctx.save(); ctx.strokeStyle = env.style.id === 'glass' ? '#35406e' : mixHex(env.colors.eye, '#885035', 0.3)
   ctx.lineWidth = 1.3; ctx.lineCap = 'round'; ctx.lineJoin = 'round'
   const happy = emotion === 'happy' || emotion === 'excited' || e.smile > 0.7
   const open = happy ? Math.max(0.65, e.mouthOpen) : e.mouthOpen
@@ -530,10 +591,28 @@ function drawPaws(env: Env, seated: boolean): void {
     ctx.restore()
   }
   for (const side of [-1, 1]) {
-    ctx.save(); ctx.translate(side * 19, 14)
+    ctx.save(); ctx.translate(side * (seated ? 21 : 19), seated ? 25 : 14)
     if ((pose.wave > 0 || env.emotion === 'angry') && side < 0) {
       ctx.rotate(1.75 + Math.sin(env.time * 7) * 0.15 * pose.wave)
     } else ctx.rotate(side * 0.13)
+    if (seated) {
+      ctx.scale(side, 1)
+      paint(env, () => {
+        ctx.moveTo(-11, -7)
+        ctx.bezierCurveTo(-19, 1, -19, 17, -11, 24)
+        ctx.bezierCurveTo(-4, 34, 14, 32, 17, 20)
+        ctx.bezierCurveTo(21, 7, 13, -6, 4, -8)
+        ctx.quadraticCurveTo(-5, -11, -11, -7); ctx.closePath()
+      }, c.body, 0.75, [-18, -10, 37, 42])
+      ellipse(env, 1, 21, 12.5, 10, c.accent, 0)
+      ctx.strokeStyle = withAlpha(env.outline, env.style.id === 'plush' ? 0.22 : 0.45)
+      ctx.lineWidth = 0.7
+      for (const x of [-3, 5]) {
+        ctx.beginPath(); ctx.moveTo(x, 24); ctx.quadraticCurveTo(x - 1, 27, x, 30); ctx.stroke()
+      }
+      ctx.restore()
+      continue
+    }
     paint(env, () => {
       ctx.moveTo(-9, 0); ctx.bezierCurveTo(-14, 13, -10, 31, -10, 41)
       ctx.bezierCurveTo(-12, 56, 12, 56, 12, 41); ctx.quadraticCurveTo(13, 16, 7, 3)
@@ -579,7 +658,13 @@ function drawAccessories(env: Env, head: boolean): void {
     if (!head) ctx.scale(env.proportions.bodyScale, env.proportions.bodyScale)
     ctx.lineWidth = 0.8; ctx.strokeStyle = shadeHex(color, -0.28); ctx.lineJoin = 'round'
     if (item.kind === 'bow') {
-      // Small fabric bow at the shoulder leaves the cream bib visible.
+      if (socketForAccessory(item.kind, item.socket).id === 'neck') {
+        // The ribbon follows the ruff beneath the jaw and passes behind the bow's knot.
+        ctx.save(); ctx.lineWidth = 1.4
+        ctx.strokeStyle = withAlpha(shadeHex(color, -0.15), 0.7)
+        ctx.beginPath(); ctx.moveTo(-24, -2); ctx.quadraticCurveTo(0, 6, 24, -2); ctx.stroke()
+        ctx.restore()
+      }
       ctx.translate(head ? 0 : -18, 0); ctx.rotate(-0.1)
       const gradient = ctx.createLinearGradient(0, -7, 0, 7)
       gradient.addColorStop(0, mixHex(color, '#fff9eb', 0.3)); gradient.addColorStop(1, shadeHex(color, -0.08))
