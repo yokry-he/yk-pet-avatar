@@ -1,9 +1,4 @@
-/**
- * 文件职责 / File responsibility
- * 程序化的部件宠物。同一套骨头，四套材质：软萌、赛璐璐、毛绒壳、玻璃。
- * Part-based procedural pet. One rig, four material treatments.
- */
-
+/** Sculpted, articulated chibi pets. Three.js stays behind the renderer's lazy entry. */
 import {
   channelValue,
   getStyle,
@@ -13,6 +8,10 @@ import {
   resolveQualityTier,
   socketForAccessory,
   styledProportions,
+  SPECIES_PART_DEFAULTS,
+  DEFAULT_PROPORTIONS,
+  APRICOT_COLORS,
+  type Emotion,
   type PetAction,
   type PetColors,
   type PetVisualState,
@@ -20,329 +19,830 @@ import {
   type StylePreset,
 } from '@yk-pet/core'
 import * as THREE from 'three'
+import { advancePose, initialPose, interpolateRig } from './pose'
+import { earSurface, pillowSurface, sculptedForm, sweptTail } from './sculpt'
 
+type PetMaterial = THREE.MeshStandardMaterial | THREE.MeshToonMaterial | THREE.MeshBasicMaterial
 interface Tint {
-  material: THREE.MeshStandardMaterial | THREE.MeshToonMaterial | THREE.MeshPhysicalMaterial | THREE.MeshBasicMaterial
-  slot: keyof PetColors | 'outline' | 'glow'
+  material: PetMaterial
+  slot: keyof PetColors | 'outline'
 }
-
 export interface ProceduralPet {
   group: THREE.Group
+  readonly poseBlend: number
   update(state: PetVisualState, time: number): void
   dispose(): void
 }
 
-const toonCache = new Map<string, THREE.DataTexture>()
-let furTexture: THREE.CanvasTexture | null = null
-
 export function createProceduralPet(state: PetVisualState, tier: QualityTier): ProceduralPet {
   const style = getStyle(state.style)
-  const parts = state.appearance?.parts ?? { ears: 'pointy' as const, tail: 'fluffy' as const, eyes: 'round' as const, muzzle: 'short' as const }
+  const deviceTier = qualityFromState({ behavior: 'idle', quality: 'auto' })
+  const glowTier = tier === 'low' || deviceTier === 'low'
+    ? 'low'
+    : tier === 'medium' || deviceTier === 'medium' ? 'medium' : 'high'
   const species = state.appearance?.species ?? 'fox'
-  const tints: Tint[] = []
-  const group = new THREE.Group()
-  const rig = new THREE.Group()
-  group.add(rig)
-
-  const hips = new THREE.Group()
+  const parts = { ...SPECIES_PART_DEFAULTS[species], ...state.appearance?.parts }
+  const tints: Tint[] = [],
+    textures = new Set<THREE.Texture>()
+  const materials = new Set<THREE.Material>(),
+    geometries = new Set<THREE.BufferGeometry>()
+  const gradient = style.material.mode === 'toon' ? toonGradient(style) : undefined
+  const noise = style.material.mode === 'fur' ? furTexture() : undefined
+  if (gradient) textures.add(gradient)
+  if (noise) textures.add(noise)
+  const group = new THREE.Group(),
+    hips = new THREE.Group(),
+    chest = new THREE.Group(),
+    head = new THREE.Group()
+  group.add(hips)
+  hips.add(chest, head)
   hips.name = 'bone-hips'
-  rig.add(hips)
-  const chest = new THREE.Group()
   chest.name = 'bone-chest'
-  hips.add(chest)
-  const neck = new THREE.Group()
-  neck.name = 'bone-neck'
-  neck.position.set(0, 0.28, 0.12)
-  hips.add(neck)
-  const head = new THREE.Group()
   head.name = 'bone-head'
-  head.position.set(0, 0.62, 0.02)
-  hips.add(head)
+  head.position.set(0, 1.12, 0.035)
+  chest.position.y = 0.49
+  const mat = (slot: keyof PetColors): PetMaterial => {
+    const m = materialFor(style, slot, tier, gradient, noise)
+    m.userData.roughness = 'roughness' in m ? m.roughness : undefined
+    materials.add(m)
+    tints.push({ material: m, slot })
+    return m
+  }
+  const bodyMat = mat('body'),
+    creamMat = mat('belly'),
+    earMat = mat('ear'),
+    pinkMat = mat('innerEar'),
+    tipMat = mat('accent')
+  const add = (
+    parent: THREE.Object3D,
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material | THREE.Material[],
+    name: string,
+    finish = true,
+  ) => {
+    geometries.add(geometry)
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.name = name
+    parent.add(mesh)
+    if (style.material.mode === 'glass') glassColors(geometry)
+    if (finish) surfaceFinish(mesh, style, tier, tints, materials, noise, glowTier)
+    return mesh
+  }
+  const faceBody = new THREE.Color(),
+    faceCream = new THREE.Color(),
+    faceBlush = new THREE.Color(),
+    tailCream = new THREE.Color()
+  const blushStrength = { value: 0 }
+  const torsoMat = mat('body')
+  const torsoMesh = add(chest, sculptedForm('body'), torsoMat, 'mesh-body')
+  const headMat = mat('body')
+  headMat.vertexColors = style.id === 'glass'
+  const headMesh = add(head, sculptedForm('head', tier === 'low' ? 64 : 96), headMat, 'mesh-head')
+  headMesh.traverse((node) => {
+    const mesh = node as THREE.Mesh
+    const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+    for (const m of list)
+      if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
+        paintMarkings(m, faceBody, faceCream, 'face', faceBlush, blushStrength)
+  })
 
-  const bodyMat = materialFor(style, '#ffffff', 'body')
-  tints.push({ material: bodyMat, slot: 'body' })
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.46, 32, 24), bodyMat)
-  body.name = 'mesh-body'
-  body.scale.set(1.08, 0.9, 0.92)
-  chest.add(body)
-  outlineAndFur(chest, body, style, tier, tints)
+  // Snout and cheek tufts share one surface, so cel outlines and fur never form floating plates.
+  const muzzle = headMesh
+  torsoMesh.traverse((node) => {
+    const mesh = node as THREE.Mesh
+    const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+    for (const m of list)
+      if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
+        paintMarkings(m, faceBody, faceCream, 'chest', faceBlush, blushStrength)
+  })
 
-  const bellyMat = materialFor(style, '#ffffff', 'belly')
-  tints.push({ material: bellyMat, slot: 'belly' })
-  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.28, 24, 16), bellyMat)
-  belly.position.set(0, -0.06, 0.24)
-  belly.scale.set(1.05, 0.82, 0.62)
-  chest.add(belly)
+  earMat.vertexColors = style.id === 'anime' || style.id === 'plush'
+  const ears = [-1, 1].map((side) => {
+    const bone = new THREE.Group()
+    bone.name = side < 0 ? 'bone-ear-l' : 'bone-ear-r'
+    bone.position.set(side * 0.375, 0.31, -0.045)
+    const long = parts.ears === 'long',
+      round = parts.ears === 'round',
+      floppy = parts.ears === 'floppy'
+    const h = long ? 0.83 : round ? 0.29 : 0.51,
+      w = long ? 0.125 : round ? 0.18 : 0.225
+    const outer = add(bone, earSurface(h, w, 0.115), earMat, 'mesh-ear')
+    if (earMat.vertexColors) {
+      const p = outer.geometry.getAttribute('position'),
+        colors: number[] = []
+      const white = new THREE.Color('#ffffff'),
+        dark = new THREE.Color('#463027')
+      for (let i = 0; i < p.count; i++) {
+        const c = white.clone().lerp(dark, THREE.MathUtils.smoothstep(p.getY(i) / h, 0.76, 0.96))
+        colors.push(c.r, c.g, c.b)
+      }
+      outer.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+    }
+    if (round) outer.scale.y = 0.85
+    const inner = add(bone, earSurface(h * 0.74, w * 0.69, 0.035), pinkMat, 'mesh-inner-ear', false)
+    inner.position.set(0, 0.065, 0.102)
+    // Small cream tufts nestle in the ear cup.
+    if (!long && !round) {
+      const tuft = add(
+        bone,
+        pillowSurface(
+          [
+            [-0.12, 0.1],
+            [-0.08, 0.21],
+            [-0.04, 0.18],
+            [0, 0.26],
+            [0.04, 0.18],
+            [0.09, 0.19],
+            [0.12, 0.1],
+            [0, 0.045],
+          ],
+          (_x, _y, r) => 0.12 + 0.025 * (1 - r * r),
+          5,
+        ),
+        creamMat,
+        'mesh-ear-tuft',
+        false,
+      )
+      tuft.scale.setScalar(0.9)
+    }
+    bone.userData.floppy = floppy
+    if (parts.ears !== 'none') head.add(bone)
+    return bone
+  })
 
-  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 32, 24), bodyMat)
-  head.add(headMesh)
-  outlineAndFur(head, headMesh, style, tier, tints)
-
-  const earL = makeEar(head, -1, style, tints, parts.ears, tier)
-  const earR = makeEar(head, 1, style, tints, parts.ears, tier)
-
-  const snoutMat = materialFor(style, '#ffffff', 'belly')
-  tints.push({ material: snoutMat, slot: 'belly' })
-  const snout = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 16), snoutMat)
-  snout.position.set(0, -0.08, 0.3)
-  snout.scale.set(1.15, 0.72, 1)
-  head.add(snout)
-
-  const noseMat = materialFor(style, '#ffffff', 'nose')
-  tints.push({ material: noseMat, slot: 'nose' })
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.045, 14, 12), noseMat)
-  nose.position.set(0, -0.02, 0.14)
-  snout.add(nose)
-
-  const eyeL = makeEye(head, -1, style)
-  const eyeR = makeEye(head, 1, style)
-  const blushMat = new THREE.MeshBasicMaterial({ color: '#ffb0b8', transparent: true, opacity: 0.4, side: THREE.DoubleSide })
-  const blushL = new THREE.Mesh(new THREE.CircleGeometry(0.055, 16), blushMat)
-  blushL.position.set(-0.2, -0.05, 0.34)
-  const blushR = blushL.clone()
-  blushR.position.x = 0.2
-  head.add(blushL, blushR)
-
-  const tail = makeTail(hips, style, tints, parts.tail, species)
-  const pawL = makePaw(hips, -1, bodyMat)
-  const pawR = makePaw(hips, 1, bodyMat)
-
+  const noseMat = new THREE.MeshPhysicalMaterial({
+    color: '#39251e',
+    transparent: style.id === 'glass',
+    roughness: 0.28,
+    clearcoat: 1,
+    clearcoatRoughness: 0.18,
+  })
+  materials.add(noseMat)
+  const nose = add(
+    head,
+    pillowSurface(
+      [
+        [-0.069, 0.015],
+        [-0.05, 0.042],
+        [0.05, 0.042],
+        [0.069, 0.015],
+        [0.03, -0.029],
+        [0, -0.044],
+        [-0.03, -0.029],
+      ],
+      (_x, _y, r) => 0.035 * (1 - r * r),
+      6,
+    ),
+    noseMat,
+    'mesh-nose',
+    false,
+  )
+  nose.position.set(0, -0.145, 0.54)
+  const eyeL = makeEye(head, -1, style, materials),
+    eyeR = makeEye(head, 1, style, materials)
+  const ink = new THREE.MeshBasicMaterial({
+    color: style.id === 'glass' ? '#425796' : '#5b3426',
+    transparent: style.id === 'glass',
+  })
+  materials.add(ink)
+  const brows = [-1, 1].map((side) => {
+    const brow = stroke(
+      [
+        [-0.052, 0, side < 0 ? -0.014 : 0.012],
+        [0, 0.019, -0.008],
+        [0.052, 0, side < 0 ? 0.012 : -0.014],
+      ],
+      0.009,
+      ink,
+    )
+    brow.position.set(side * 0.25, 0.29, 0.3)
+    head.add(brow)
+    return brow
+  })
+  const shadowBlushTexture = contactTexture()
+  textures.add(shadowBlushTexture)
+  const blushPatches = [-1, 1].map((side) => {
+    const material = new THREE.MeshBasicMaterial({
+      color: '#ff7896', map: shadowBlushTexture, transparent: true, opacity: 0,
+      depthWrite: false,
+    })
+    materials.add(material)
+    const patch = new THREE.Mesh(new THREE.PlaneGeometry(0.20, 0.095), material)
+    patch.position.set(side * 0.43, -0.205, 0.354)
+    patch.rotation.y = side * 0.38
+    head.add(patch)
+    return patch
+  })
+  const shyBlush = new THREE.Group()
+  shyBlush.name = 'expression-shy-blush'
+  head.add(shyBlush)
+  const blushInk = new THREE.MeshBasicMaterial({
+    color: style.id === 'glass' ? '#ff659b' : '#df7d85',
+  })
+  materials.add(blushInk)
+  for (const side of [-1, 1]) {
+    const cheek = new THREE.Group()
+    cheek.position.set(side * 0.41, -0.20, 0.375)
+    cheek.rotation.y = side * 0.40
+    shyBlush.add(cheek)
+    for (let i = -1; i <= 1; i++) {
+      const line = stroke([[-0.009, -0.016, 0], [0.009, 0.016, 0]], 0.004, blushInk)
+      line.position.x = i * 0.032
+      cheek.add(line)
+    }
+  }
+  const mouth = new THREE.Group()
+  mouth.position.set(0, -0.239, 0.525)
+  head.add(mouth)
+  const stem = stroke(
+    [
+      [0, 0.064, 0],
+      [0, 0.026, 0],
+    ],
+    0.0065,
+    ink,
+  )
+  mouth.add(stem)
+  const smiles = [-1, 0, 1].map((mood) => {
+    const mesh = stroke(
+      mood === 0
+        ? [
+            [-0.105, 0.01, 0],
+            [-0.065, -0.018, 0],
+            [0, 0.006, 0],
+            [0.065, -0.018, 0],
+            [0.105, 0.01, 0],
+          ]
+        : [
+            [-0.127, mood * 0.018, 0],
+            [-0.102, -mood * 0.014, 0],
+            [-0.057, -mood * 0.022, 0],
+            [0, 0.006, 0],
+            [0.057, -mood * 0.022, 0],
+            [0.102, -mood * 0.014, 0],
+            [0.127, mood * 0.018, 0],
+          ],
+      0.0065,
+      ink,
+    )
+    mouth.add(mesh)
+    return mesh
+  })
+  const oralMat = new THREE.MeshBasicMaterial({
+    color: style.id === 'glass' ? '#263985' : '#6d292b',
+    transparent: style.id === 'glass',
+  })
+  materials.add(oralMat)
+  const openMouth = add(
+    mouth,
+    pillowSurface(
+      [
+        [-0.09, 0],
+        [0, -0.013],
+        [0.09, 0],
+        [0.075, -0.1],
+        [0, -0.155],
+        [-0.075, -0.1],
+      ],
+      (_x, _y, r) => 0.006 + 0.008 * (1 - r * r),
+      6,
+    ),
+    oralMat,
+    'mesh-mouth-open',
+    false,
+  )
+  const roundMouth = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), oralMat)
+  roundMouth.position.set(0, -0.04, 0.016)
+  roundMouth.scale.set(0.046, 0.062, 0.012)
+  mouth.add(roundMouth)
+  const tongueMat = new THREE.MeshStandardMaterial({
+    color: style.id === 'glass' ? '#a6b3ff' : '#f59295',
+    roughness: 0.65,
+    transparent: style.id === 'glass',
+  })
+  materials.add(tongueMat)
+  const tongue = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), tongueMat)
+  tongue.position.set(0, -0.108, 0.021)
+  tongue.scale.set(0.063, 0.034, 0.008)
+  openMouth.add(tongue)
+  // Seated soles face the viewer; standing rotates the feet onto their undersides.
+  const beanMat = mat('innerEar')
+  if (beanMat instanceof THREE.MeshPhysicalMaterial && style.id === 'glass') {
+    beanMat.transmission = 0
+    beanMat.emissiveIntensity = 0.55
+  }
+  const hindFeet: THREE.Mesh[] = []
+  const hindLegs: THREE.Mesh[] = []
+  const hindSoles: THREE.Group[] = []
+  const hindToeSplits: THREE.Group[] = []
+  for (const side of [-1, 1]) {
+    const leg = add(hips, sculptedForm('limb', 28), bodyMat, 'mesh-hind-leg')
+    leg.position.set(side * 0.235, 0.345, 0.015)
+    hindLegs.push(leg)
+    const foot = add(hips, sculptedForm('foot', 28), bodyMat, 'mesh-hind-foot')
+    hindFeet.push(foot)
+    foot.position.set(side * 0.32, 0.225, 0.21)
+    foot.rotation.z = side * -0.22
+    const pads = new THREE.Group()
+    pads.name = 'hind-sole-pads'
+    foot.add(pads)
+    hindSoles.push(pads)
+    const sole = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 18), creamMat)
+    sole.position.set(0, -0.012, 0.112)
+    sole.scale.set(0.137, 0.164, 0.05)
+    pads.add(sole)
+    const bean = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), beanMat)
+    bean.position.set(0, -0.057, 0.158)
+    bean.scale.set(0.063, 0.067, 0.018)
+    pads.add(bean)
+    for (let i = 0; i < 3; i++) {
+      const toe = new THREE.Mesh(bean.geometry, beanMat)
+      toe.scale.set(0.024, 0.032, 0.013)
+      toe.position.set((i - 1) * 0.065, 0.054 - Math.abs(i - 1) * 0.012, 0.157)
+      pads.add(toe)
+    }
+    const toeSplits = new THREE.Group()
+    toeSplits.name = 'hind-toe-splits'
+    foot.add(toeSplits)
+    hindToeSplits.push(toeSplits)
+    for (const x of [-0.048, 0.048]) {
+      // The foot's local -Z surface becomes its upper surface after the quarter turn.
+      const points = [0.10, 0.135, 0.165, 0.185].map((y) => [
+        x, y, -0.15 * Math.sqrt(Math.max(0, 1 - (x / 0.17) ** 2 - (y / 0.2) ** 2)) - 0.012,
+      ])
+      toeSplits.add(stroke(points, 0.0035, ink))
+    }
+  }
+  const palmPads: THREE.Group[] = []
+  const paws = [-1, 1].map((side) => {
+    const bone = new THREE.Group()
+    bone.name = side < 0 ? 'bone-paw-l' : 'bone-paw-r'
+    bone.position.set(side * 0.175, 0.325, 0.265)
+    hips.add(bone)
+    const limb = add(bone, sculptedForm('limb', 28), bodyMat, 'mesh-foreleg')
+    limb.rotation.z = side * -0.08
+    const paw = add(bone, sculptedForm('foot', 28), creamMat, 'mesh-front-paw')
+    paw.position.set(side * 0.022, -0.2, 0.042)
+    paw.scale.set(0.66, 0.6, 0.84)
+    const pads = new THREE.Group()
+    paw.add(pads)
+    palmPads.push(pads)
+    const palm = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), beanMat)
+    palm.position.set(0, -0.177, 0.01)
+    palm.scale.set(0.065, 0.013, 0.07)
+    pads.add(palm)
+    for (let i = 0; i < 3; i++) {
+      const bean = new THREE.Mesh(palm.geometry, beanMat)
+      bean.position.set((i - 1) * 0.058, -0.163, 0.085)
+      bean.scale.set(0.023, 0.012, 0.027)
+      pads.add(bean)
+    }
+    for (const offset of [-0.038, 0.038]) {
+      const seam = stroke(
+        [
+          [offset, -0.018, 0.143],
+          [offset, -0.065, 0.126],
+        ],
+        0.0025,
+        ink,
+      )
+      seam.position.copy(paw.position)
+      bone.add(seam)
+    }
+    return bone
+  })
+  const tail = new THREE.Group()
+  tail.name = 'bone-tail'
+  tail.position.set(0.29, 0.24, -0.2)
+  hips.add(tail)
+  if (parts.tail !== 'none') {
+    if (parts.tail === 'puff' || parts.tail === 'bob') {
+      const puff = add(tail, sculptedForm('foot', 24), tipMat, 'mesh-tail')
+      puff.scale.setScalar(parts.tail === 'bob' ? 0.6 : 0.95)
+      puff.position.set(0.14, 0, -0.08)
+    } else if (parts.tail === 'thin') {
+      add(tail, sweptTail(true), bodyMat, 'mesh-tail')
+    } else {
+      const mesh = add(tail, sweptTail(), [mat('body'), mat('accent')], 'mesh-tail')
+      mesh.traverse((node) => {
+        const surface = node as THREE.Mesh
+        const list = Array.isArray(surface.material) ? surface.material : surface.material ? [surface.material] : []
+        for (const material of list)
+          if (!(material instanceof THREE.MeshBasicMaterial) && !(material instanceof THREE.ShaderMaterial))
+            paintTailTip(material, faceBody, tailCream)
+      })
+    }
+  }
   const accessories = new THREE.Group()
   accessories.name = 'sockets'
+  accessories.position.y = 0.49
   hips.add(accessories)
-  buildAccessories(accessories, state.appearance?.accessories ?? [], state.props ?? [], style)
-
-  if (species === 'cat' || species === 'bunny') addWhiskers(head)
+  buildAccessories(accessories, state.appearance?.accessories ?? [], state.props ?? [], style, materials)
+  if (species === 'cat' || species === 'bunny') {
+    for (const side of [-1, 1])
+      for (let i = 0; i < 3; i++) {
+        const whisker = stroke(
+          [
+            [side * 0.36, -0.225 + i * 0.045, 0.39],
+            [side * 0.55, -0.24 + i * 0.065, 0.33],
+          ],
+          0.0025,
+          ink,
+        )
+        head.add(whisker)
+      }
+  }
+  const shadowTexture = contactTexture()
+  textures.add(shadowTexture)
+  const shadowMat = new THREE.MeshBasicMaterial({
+    color: style.id === 'glass' ? '#6d5cff' : '#68432b',
+    map: shadowTexture,
+    transparent: true,
+    opacity: 0.26,
+    depthWrite: false,
+  })
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(1.65, 1.12), shadowMat)
+  shadow.rotation.x = -Math.PI / 2
+  shadow.position.set(0.12, 0.012, 0)
+  group.add(shadow)
   if (style.platform === 'ring') {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.72, 0.015, 12, 48),
-      new THREE.MeshBasicMaterial({ color: style.palette.glow }),
-    )
-    ring.rotation.x = Math.PI / 2
-    ring.position.y = 0.02
-    group.add(ring)
-    const ring2 = ring.clone()
-    ring2.material = (ring.material as THREE.MeshBasicMaterial).clone()
-    ;(ring2.material as THREE.MeshBasicMaterial).color.set(style.palette.rim)
-    ring2.scale.setScalar(0.62)
-    group.add(ring2)
-  } else {
-    const shadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.62, 32),
-      new THREE.MeshBasicMaterial({ color: '#000000', transparent: true, opacity: 0.16 }),
-    )
-    shadow.rotation.x = -Math.PI / 2
-    shadow.position.y = 0.01
-    group.add(shadow)
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.69 + i * 0.035, i === 0 ? 0.009 : 0.016, 8, 72),
+        new THREE.MeshBasicMaterial({
+          color: i === 0 ? '#a6faff' : '#9976ff',
+          transparent: true,
+          opacity: i === 0 ? 0.85 : 0.13,
+          depthWrite: false,
+        }),
+      )
+      ring.rotation.x = Math.PI / 2
+      ring.position.set(0.06, 0.025, 0)
+      group.add(ring)
+    }
+    if (glowTier !== 'low') {
+      const aura = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.3, 2.5),
+        new THREE.MeshBasicMaterial({
+          color: '#7367ff',
+          map: shadowTexture,
+          transparent: true,
+          opacity: 0.18,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      aura.position.set(0.05, 1.0, -0.55)
+      aura.userData.ignoreFraming = true
+      group.add(aura)
+      const glow = new THREE.PointLight('#77dfff', 0.4, 2)
+      glow.position.set(0, 0.65, 0.2)
+      hips.add(glow)
+    }
   }
 
-  return {
+  let disposed = false
+  let transition = initialPose(state.appearance?.pose)
+  let lastTime = 0
+  const pet: ProceduralPet = {
     group,
+    get poseBlend() {
+      return transition.value
+    },
     update(next, time) {
-      const active = getStyle(next.style)
-      const colors = gradeColors(next.appearance?.colors ?? {
-        body: '#f39a52', belly: '#fff7f0', ear: '#ef8a42', innerEar: '#ffc7b8',
-        eye: '#2c2428', accent: '#fffaf6', nose: '#ff8d9a', blush: '#ffb0b8',
-      }, active.grade)
-      const props = styledProportions(next.appearance?.proportions ?? {
-        headScale: 1, bodyScale: 1, bodyLength: 1, earScale: 1, earScaleL: 1, earScaleR: 1,
-        tailScale: 1, eyeScale: 1, snoutScale: 1, cheekScale: 1,
-      }, active)
-      const outline = next.finish?.outlineColor ?? (active.outline.followBody ? colors.body : active.outline.color)
+      const colors = gradeColors(next.appearance?.colors ?? APRICOT_COLORS, {
+        ...style.grade,
+        lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' ? 0.015 : -0.045,
+        saturation: style.grade.saturation * 1.18,
+      })
+      const props = styledProportions(next.appearance?.proportions ?? DEFAULT_PROPORTIONS, style)
       for (const tint of tints) {
-        const color = tint.slot === 'outline' ? outline : tint.slot === 'glow' ? active.palette.glow : colors[tint.slot]
-        if ('color' in tint.material) tint.material.color.set(color)
+        let color =
+          tint.slot === 'outline' ? (next.finish?.outlineColor ?? style.outline.color) : colors[tint.slot]
+        if (style.id === 'glass' && tint.slot !== 'outline')
+          color =
+            tint.slot === 'innerEar'
+              ? '#bc8ef9'
+              : tint.slot === 'belly' || tint.slot === 'accent'
+                ? '#b5eaff'
+                : '#8abfff'
+        tint.material.color.set(tint.material.userData.faceMask ? '#ffffff' : color)
+        if (tint.slot === 'outline' && tint.material.userData.grow)
+          tint.material.userData.grow.value = 0.007 * (next.finish?.outlineWidth ?? 1)
+        if (tint.material instanceof THREE.MeshPhysicalMaterial)
+          tint.material.roughness =
+            next.finish?.gloss === undefined
+              ? tint.material.userData.roughness
+              : THREE.MathUtils.lerp(style.material.roughness, 0.12, next.finish.gloss)
+        if (tint.slot === 'innerEar' && style.id !== 'glass')
+          tint.material.color.lerp(new THREE.Color('#ed8d94'), 0.25)
       }
-      blushMat.color.set(colors.blush)
-      blushMat.opacity = 0.15 + active.blush * 0.4 * (props.cheekScale)
-      const action = (next.behavior || 'idle') as PetAction
-      const reduced = Boolean(next.reducedMotion)
-      const drag = Boolean(next.drag && next.drag.active)
+      faceBody.set(style.id === 'glass' ? '#83c9ff' : colors.body)
+      faceCream.set(style.id === 'glass' ? '#b5eaff' : colors.belly)
+      tailCream.set(style.id === 'glass' ? '#b5eaff' : colors.accent)
+      faceBlush.set(style.id === 'glass' ? '#ff659b' : colors.blush)
+      // Foxes have a dark button nose; bunny noses retain the selected pink.
+      const defaultNose = (next.appearance?.colors.nose ?? APRICOT_COLORS.nose) === APRICOT_COLORS.nose
+      noseMat.color.set(
+        style.id === 'glass' ? '#253888' : species === 'fox' && defaultNose ? '#39251e' : colors.nose,
+      )
+      const action = (next.behavior || 'idle') as PetAction,
+        reduced = Boolean(next.reducedMotion),
+        drag = Boolean(next.drag?.active)
       const pose = resolveBodyPose(action, time, reduced, drag)
       const expression = resolveExpression({
-        action, emotion: (next.emotion as 'neutral') || 'neutral', speaking: Boolean(next.speaking),
-        time, reducedMotion: reduced, dragActive: drag,
+        action,
+        emotion: (next.emotion || 'neutral') as Emotion,
+        speaking: Boolean(next.speaking),
+        time,
+        reducedMotion: reduced,
+        dragActive: drag,
       })
-      const seated = !['walk', 'jump', 'working', 'dragged'].includes(action)
-      hips.position.y = seated ? 0.32 : 0.48
-      hips.rotation.x = seated ? 0.18 : pose.lean
-      hips.scale.set(props.bodyScale, props.bodyScale * props.bodyLength, props.bodyScale)
-      hips.position.y += pose.bob * 0.01 + pose.jump * 0.012
+      transition = advancePose(transition, next.appearance?.pose, time - lastTime, reduced)
+      lastTime = time
+      const rig = interpolateRig(transition.value)
+      const t = reduced ? 0 : time
+      hips.position.y = pose.jump * 0.006
+      hips.rotation.set(pose.lean * 0.25, 0, 0)
+      // Head and torso proportions are independent; feet stay grounded while breathing.
+      chest.scale.set(
+        props.bodyScale * pose.squashX * rig.bodyWidth,
+        props.bodyScale * props.bodyLength * pose.squashY * rig.bodyHeight,
+        props.bodyScale,
+      )
+      chest.position.y = rig.chestY + (props.bodyScale * props.bodyLength - 1) * 0.46
+      head.position.y = rig.headY + (props.bodyScale * props.bodyLength - 1) * 0.34 + pose.bob * 0.0015
+      accessories.position.y = rig.chestY
+      hindFeet.forEach((foot, i) => {
+        const side = i === 0 ? -1 : 1
+        foot.position.set(side * rig.footX, rig.footY, rig.footZ)
+        foot.rotation.set(rig.footPitch, 0, -side * rig.footRoll)
+        foot.scale.set(1, rig.footHeight, rig.footDepth)
+        // Hide the underside at the standing endpoint, including through transparent glass.
+        hindSoles[i]!.visible = transition.value < 0.995
+        hindSoles[i]!.scale.z = 1 - transition.value * 0.8
+        hindToeSplits[i]!.visible = transition.value > 0
+        hindToeSplits[i]!.scale.setScalar(Math.max(0.001, transition.value))
+      })
+      hindLegs.forEach((leg) => {
+        leg.visible = rig.legScale > 0
+        leg.scale.set(1.28, Math.max(0.001, rig.legScale * 0.86), 1.2)
+      })
       head.scale.setScalar(props.headScale)
-      head.rotation.z = pose.lean * 0.8
-      head.rotation.y = Math.sin(time * (pose.think ? 1.4 : 0.7)) * 0.08
-      earL.scale.setScalar(props.earScale * props.earScaleL)
-      earR.scale.setScalar(props.earScale * props.earScaleR)
-      earL.rotation.z = 0.55 + pose.earTwitch + expression.earDrop * 0.35
-      earR.rotation.z = -0.55 - pose.earTwitch - expression.earDrop * 0.35
-      snout.scale.set(1.15 * props.snoutScale, 0.72 * props.snoutScale, props.snoutScale)
-      const almond = next.appearance?.parts?.eyes === 'almond' || active.material.mode === 'toon'
-      const dot = next.appearance?.parts?.eyes === 'dot' ? 0.62 : 1
-      const eyeY = Math.max(0.08, expression.eyeOpen) * (almond ? 0.78 : 1) * dot
-      const eyeX = props.eyeScale * (almond ? 1.12 : 1) * dot
+      head.rotation.set(
+        0,
+        Math.sin(t * 0.65) * 0.025,
+        pose.lean * 0.5 + (channelValue(next.channels, 'bone-head', 'rotation.z') ?? 0),
+      )
+      ears.forEach((ear, i) => {
+        const side = i === 0 ? -1 : 1
+        ear.scale.setScalar(props.earScale * (i === 0 ? props.earScaleL : props.earScaleR))
+        const twitch = Math.sin(t * 2.3 + i) * Math.max(0, Math.sin(t * 0.81 + i) - 0.85) * 0.24
+        ear.rotation.z =
+          -side * (parts.ears === 'long' ? 0.13 : 0.29) -
+          side * (expression.earDrop * 0.42 + twitch + (ear.userData.floppy ? 0.65 : 0))
+      })
+      const snoutDepth = 1 + (props.snoutScale - 1) * 0.12
+      muzzle.scale.set(1 + (props.cheekScale - 1) * 0.07, 1, snoutDepth)
+      nose.position.z = 0.54 * snoutDepth
+      mouth.position.z = 0.525 * snoutDepth
+      const emotion = next.emotion || 'neutral'
+      const joyful =
+        (emotion === 'happy' || (emotion === 'neutral' && expression.smile > 0.7)) &&
+        !drag && action !== 'sleep'
+      const eyeOpen = joyful ? 1
+        : emotion === 'tired' ? Math.min(1, expression.eyeOpen / 0.5)
+        : emotion === 'surprised' ? expression.eyeOpen * 0.90
+        : Math.max(0.045, expression.eyeOpen)
       for (const eye of [eyeL, eyeR]) {
-        eye.group.scale.set(eyeX, props.eyeScale * eyeY, props.eyeScale * dot)
-        const pointer = next.pointer ?? { x: 0, y: 0 }
-        eye.group.rotation.y = pointer.x * 0.45
-        eye.group.rotation.x = pointer.y * 0.3
-        eye.iris.color.set(expression.heartEyes ? '#ff5d8f' : colors.eye)
-        if (active.material.mode === 'glass') {
-          eye.iris.emissive?.set(active.palette.glow)
-          eye.iris.emissiveIntensity = 0.6
-        }
+        eye.group.position.z = 0.363 * snoutDepth
+        const dot = parts.eyes === 'dot' ? 0.65 : 1,
+          almond = parts.eyes === 'almond' ? 0.82 : 1
+        const eyeSize = props.eyeScale / style.shape.eye
+        eye.group.scale.set(
+          eyeSize * dot * (emotion === 'surprised' ? 1.25 : 1.1),
+          eyeSize * dot * eyeOpen * almond * 0.93,
+          1,
+        )
+        eye.gaze.position.set((next.pointer?.x ?? 0) * 0.015, -(next.pointer?.y ?? 0) * 0.012, 0)
+        eye.pupil.scale.set(0.097 * expression.pupil, 0.121 * expression.pupil, 0.026)
+        eye.open.visible = !joyful
+        eye.closed.visible = joyful
+        eye.lid.visible = emotion === 'tired' && !joyful
+        eye.lid.material.color.set(style.id === 'glass' ? '#86bfff' : colors.body)
+        eye.tear.visible = emotion === 'sad' && eye === eyeL
+        eye.heart.visible = expression.heartEyes
+        eye.pupil.visible = !expression.heartEyes
+        eye.iris.color
+          .set(style.id === 'glass' ? '#4556bc' : colors.eye)
+          .lerp(new THREE.Color(style.id === 'glass' ? '#5cf1ff' : '#ac642e'), 0.48)
       }
-      tail.rotation.y = pose.tailWag + (channelValue(next.channels, 'bone-tail', 'rotation.y') ?? 0)
-      tail.rotation.z = (seated ? 0.95 : 0.25) + pose.tailLift
-      head.rotation.z += channelValue(next.channels, 'bone-head', 'rotation.z') ?? 0
-      pawR.rotation.z += channelValue(next.channels, 'bone-paw-r', 'rotation.z') ?? 0
+      brows.forEach((brow, i) => {
+        const side = i === 0 ? -1 : 1
+        brow.position.z = 0.3 * snoutDepth
+        brow.rotation.z =
+          side *
+          (emotion === 'angry'
+            ? 0.39
+            : emotion === 'sad'
+              ? -0.4
+              : emotion === 'focused'
+                ? 0.2
+                : expression.brow * 0.1)
+        brow.position.y = 0.285 + (emotion === 'surprised' ? 0.038 : expression.brow * 0.016)
+      })
+      smiles.forEach(
+        (smile, i) => (smile.visible = i === (expression.smile < -0.2 ? 0 : expression.smile > 0.15 ? 2 : 1)),
+      )
+      const opening = Math.max(expression.mouthOpen, expression.smile > 0.6 ? 0.65 : 0)
+      roundMouth.visible = emotion === 'surprised'
+      stem.visible = !roundMouth.visible
+      if (roundMouth.visible) smiles.forEach((smile) => (smile.visible = false))
+      openMouth.visible = opening > 0.08 && !roundMouth.visible
+      openMouth.scale.set(joyful ? 1.22 : 1, joyful ? Math.max(0.85, opening) : Math.max(0.2, opening), 1)
+      blushStrength.value = Math.min(
+        0.95,
+        (emotion === 'shy' ? 0.92 : 0.10 + expression.blush * 0.70) * props.cheekScale,
+      )
+      blushPatches.forEach((patch) => {
+        patch.material.opacity = emotion === 'shy' ? 0.70 : emotion === 'love' ? 0.44 : joyful ? 0.28 : 0
+      })
+      shyBlush.visible = emotion === 'shy'
+      tail.position.set(0.29, rig.tailY, rig.tailZ)
       tail.scale.setScalar(props.tailScale)
-      pawL.position.y = seated ? -0.02 : -0.42 + Math.sin(pose.pawPhase) * 0.06
-      pawR.position.y = seated ? -0.02 : -0.42 - Math.sin(pose.pawPhase) * 0.06
-      pawL.position.z = seated ? 0.32 : 0.12
-      pawR.position.z = seated ? 0.32 : 0.12
-      if (pose.wave > 0) {
-        pawR.rotation.z = -1.1 + Math.sin(time * 12) * 0.4
-        pawR.position.y = 0.15
-      } else {
-        pawR.rotation.z = 0
-      }
-      blushL.scale.setScalar(props.cheekScale)
-      blushR.scale.setScalar(props.cheekScale)
+      tail.rotation.set(
+        0,
+        pose.tailWag * 0.22 + (channelValue(next.channels, 'bone-tail', 'rotation.y') ?? 0),
+        rig.tailRoll + Math.sin(t * 1.3) * 0.045 + pose.tailLift * 0.07,
+      )
+      paws.forEach((paw, i) => {
+        palmPads[i]!.visible = pose.wave > 0 && i === 1
+        paw.rotation.set(0, 0, (i === 0 ? -1 : 1) * rig.pawRoll)
+        paw.position.set(
+          (i === 0 ? -1 : 1) * rig.pawX,
+          rig.pawY + Math.sin(pose.pawPhase + i * Math.PI) * 0.035,
+          rig.pawZ,
+        )
+        if (pose.wave > 0 && i === 1) {
+          paw.rotation.z = 2.4 + Math.sin(t * 9) * 0.2
+          paw.rotation.x = 1.2
+          paw.position.set(0.45, 0.78, 0.27)
+        }
+        paw.rotation.z +=
+          channelValue(next.channels, i === 0 ? 'bone-paw-l' : 'bone-paw-r', 'rotation.z') ?? 0
+      })
     },
     dispose() {
-      const geometries = new Set<THREE.BufferGeometry>()
-      const materials = new Set<THREE.Material>()
-      group.traverse(obj => {
+      if (disposed) return
+      disposed = true
+      group.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (mesh.geometry) geometries.add(mesh.geometry)
         const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
-        list.forEach(material => materials.add(material))
+        for (const material of list) {
+          materials.add(material)
+          for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value)
+        }
+        if (obj instanceof THREE.Light) obj.dispose()
       })
-      geometries.forEach(geometry => geometry.dispose())
-      materials.forEach(material => material.dispose())
+      geometries.forEach((g) => g.dispose())
+      materials.forEach((m) => m.dispose())
+      textures.forEach((t) => t.dispose())
     },
   }
+  pet.update(state, 0)
+  return pet
 }
 
 export function qualityFromState(state: PetVisualState): QualityTier {
   const nav = (typeof navigator === 'undefined' ? {} : navigator) as Navigator & { deviceMemory?: number }
   return resolveQualityTier(state.finish?.furQuality ?? state.quality, {
     deviceMemoryGb: nav.deviceMemory,
-    hardwareConcurrency: typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
+    hardwareConcurrency: nav.hardwareConcurrency,
   })
 }
 
-function makeEar(head: THREE.Group, side: number, style: StylePreset, tints: Tint[], ears: string, tier: QualityTier): THREE.Group {
-  const bone = new THREE.Group()
-  bone.name = side < 0 ? 'bone-ear-l' : 'bone-ear-r'
-  bone.position.set(side * 0.18, 0.32, 0)
-  bone.rotation.z = side * -0.35
-  const height = ears === 'long' ? 0.78 : ears === 'round' || ears === 'floppy' ? 0.24 : 0.55
-  const radius = ears === 'round' ? 0.14 : 0.12
-  const geo = ears === 'round' || ears === 'floppy'
-    ? new THREE.SphereGeometry(radius, 18, 14)
-    : new THREE.ConeGeometry(radius, height, 16)
-  const mat = materialFor(style, '#ffffff', 'ear')
-  tints.push({ material: mat, slot: 'ear' })
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.position.y = ears === 'floppy' ? 0.02 : height * 0.35
-  if (ears === 'floppy') mesh.rotation.z = side * -0.9
-  bone.add(mesh)
-  outlineAndFur(bone, mesh, style, tier, tints)
-  const innerMat = materialFor(style, '#ffffff', 'innerEar')
-  tints.push({ material: innerMat, slot: 'innerEar' })
-  const inner = new THREE.Mesh(
-    ears === 'round' ? new THREE.SphereGeometry(radius * 0.55, 12, 10) : new THREE.ConeGeometry(radius * 0.55, height * 0.55, 12),
-    innerMat,
-  )
-  inner.position.set(0, mesh.position.y * 0.85, 0.04)
-  bone.add(inner)
-  if (ears !== 'none') head.add(bone)
-  return bone
+function stroke(points: number[][], radius: number, material: THREE.Material): THREE.Mesh {
+  const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(p[0], p[1], p[2])))
+  return new THREE.Mesh(new THREE.TubeGeometry(curve, 20, radius, 6, false), material)
 }
 
-function makeEye(head: THREE.Group, side: number, style: StylePreset) {
+function makeEye(head: THREE.Group, side: number, style: StylePreset, materials: Set<THREE.Material>) {
   const group = new THREE.Group()
-  group.position.set(side * 0.15, 0.04, 0.3)
-  const gloss = Math.max(0.05, 1 - style.material.gloss)
-  const white = new THREE.Mesh(
-    new THREE.SphereGeometry(0.095, 18, 14),
-    new THREE.MeshPhysicalMaterial({ color: '#fffdfb', roughness: gloss, clearcoat: style.material.gloss, clearcoatRoughness: 0.08 }),
-  )
-  white.scale.set(1, 1.15, 0.5)
-  const iris = new THREE.MeshStandardMaterial({ color: '#2c2428', roughness: gloss, metalness: 0.04, emissive: '#000000' })
-  const irisMesh = new THREE.Mesh(new THREE.SphereGeometry(0.058, 16, 12), iris)
-  irisMesh.position.z = 0.045
-  const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 10), new THREE.MeshBasicMaterial({ color: '#140e12' }))
-  pupil.position.z = 0.075
-  const highlight = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 8), new THREE.MeshBasicMaterial({ color: '#ffffff' }))
-  highlight.position.set(-0.028, 0.03, 0.086)
-  group.add(white, irisMesh, pupil, highlight)
-  if (style.sparkle > 0.5) {
-    const spark = highlight.clone()
-    spark.scale.setScalar(0.55)
-    spark.position.set(0.03, -0.02, 0.088)
-    group.add(spark)
-  }
-  head.add(group)
-  return { group, iris }
-}
-
-function makeTail(hips: THREE.Group, style: StylePreset, tints: Tint[], tail: string, species: string): THREE.Group {
-  const bone = new THREE.Group()
-  bone.name = 'bone-tail'
-  bone.position.set(0.28, 0.02, -0.22)
-  const mat = materialFor(style, '#ffffff', 'body')
-  tints.push({ material: mat, slot: 'body' })
-  const tip = materialFor(style, '#ffffff', 'accent')
-  tints.push({ material: tip, slot: 'accent' })
-  if (tail === 'none') {
-    hips.add(bone)
-    return bone
-  }
-  if (tail === 'thin' || species === 'cat' && tail === 'fluffy') {
-    const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.48, 6, 12), mat)
-    mesh.rotation.x = Math.PI / 2.4
-    mesh.position.z = -0.2
-    bone.add(mesh)
-  } else if (tail === 'puff' || tail === 'bob') {
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(tail === 'bob' ? 0.1 : 0.16, 18, 14), tip)
-    mesh.position.set(0, 0.05, -0.08)
-    bone.add(mesh)
-  } else {
-    const radii = [0.16, 0.18, 0.15, 0.12]
-    radii.forEach((radius, index) => {
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 12), index === radii.length - 1 ? tip : mat)
-      mesh.position.set(0, 0.04 * index, -0.16 * index)
-      bone.add(mesh)
-      if (index === 0) outlineAndFur(bone, mesh, style, 'low', tints)
+  group.position.set(side * 0.255, 0.055, 0.363)
+  group.rotation.y = side * 0.28
+  const material = (color: string, roughness = 0.2) => {
+    const m = new THREE.MeshPhysicalMaterial({
+      color,
+      roughness,
+      clearcoat: 0.45,
+      clearcoatRoughness: 0.12,
+      envMapIntensity: 0.45,
+      transparent: style.id === 'glass',
     })
+    materials.add(m)
+    return m
   }
-  hips.add(bone)
-  return bone
-}
-
-function makePaw(hips: THREE.Group, side: number, material: THREE.Material): THREE.Group {
-  const bone = new THREE.Group()
-  bone.name = side < 0 ? 'bone-paw-l' : 'bone-paw-r'
-  bone.position.set(side * 0.2, -0.05, 0.28)
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), material)
-  mesh.scale.set(1, 0.72, 1.15)
-  bone.add(mesh)
-  hips.add(bone)
-  return bone
-}
-
-function addWhiskers(head: THREE.Group): void {
-  const points: number[] = []
-  for (const side of [-1, 1]) {
-    for (const y of [-0.02, 0.02, 0.06]) {
-      points.push(side * 0.12, y, 0.36, side * 0.38, y + side * 0.01, 0.34)
-    }
+  const lens = (x: number, y: number, z: number, m: THREE.Material, depth: number) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), m)
+    mesh.scale.set(x, y, z)
+    mesh.position.z = depth
+    return mesh
   }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-  head.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: '#6a584e' })))
+  const open = new THREE.Group()
+  open.name = 'eye-open'
+  group.add(open)
+  open.add(lens(0.159, 0.192, 0.035, material(style.id === 'glass' ? '#afdfff' : '#fff0d4', 0.7), 0))
+  const gaze = new THREE.Group()
+  open.add(gaze)
+  gaze.add(lens(0.137, 0.171, 0.033, material('#fff9ef', 0.6), 0.025))
+  const iris = material('#86502c', 0.12)
+  const irisMesh = lens(
+    style.id === 'anime' ? 0.131 : 0.123,
+    style.id === 'anime' ? 0.163 : 0.155,
+    0.035, iris, 0.047,
+  )
+  irisMesh.position.x = 0.01
+  gaze.add(irisMesh)
+  const pupil = lens(0.097, 0.121, 0.026, material('#130f13', 0.1), 0.078)
+  pupil.position.y = 0.022
+  gaze.add(pupil)
+  const shine = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: style.id === 'glass' })
+  materials.add(shine)
+  for (const [x, y, r] of [
+    [-0.039, 0.077, style.id === 'anime' ? 0.042 : 0.029],
+    [0.045, -0.058, 0.012],
+  ]) {
+    const light = lens(r!, r!, 0.009, shine, 0.11)
+    light.position.x = x!
+    light.position.y = y!
+    gaze.add(light)
+  }
+  const heartShape = new THREE.Shape()
+  heartShape.moveTo(0, -0.075)
+  heartShape.bezierCurveTo(-0.15, 0.02, -0.066, 0.13, 0, 0.062)
+  heartShape.bezierCurveTo(0.066, 0.13, 0.15, 0.02, 0, -0.075)
+  const heartMat = new THREE.MeshBasicMaterial({
+    color: '#ff4188',
+    side: THREE.DoubleSide,
+    transparent: style.id === 'glass',
+  })
+  materials.add(heartMat)
+  const heart = new THREE.Mesh(new THREE.ShapeGeometry(heartShape, 20), heartMat)
+  heart.name = 'eye-heart'
+  heart.scale.set(1.48, 1.60, 1)
+  heart.position.z = 0.135
+  gaze.add(heart)
+  const expressionInk = new THREE.MeshBasicMaterial({
+    color: style.id === 'glass' ? '#364d99' : '#60352b',
+  })
+  materials.add(expressionInk)
+  const closed = stroke(
+    [
+      [-0.125, -0.015, 0.08], [-0.065, 0.065, 0.10], [0, 0.095, 0.11],
+      [0.065, 0.065, 0.10], [0.125, -0.015, 0.08],
+    ],
+    0.015,
+    expressionInk,
+  )
+  closed.name = 'eye-happy-arc'
+  group.add(closed)
+  const lidMaterial = new THREE.MeshStandardMaterial({ color: '#ffb16f', roughness: 0.8 })
+  materials.add(lidMaterial)
+  const lid = new THREE.Mesh(
+    pillowSurface(
+      [
+        [-0.159, 0.012], [-0.153, 0.115], [-0.08, 0.193], [0, 0.207],
+        [0.08, 0.193], [0.153, 0.115], [0.159, 0.012], [0, 0],
+      ],
+      (_x, _y, r) => 0.12 + 0.01 * (1 - r * r),
+      5,
+    ),
+    lidMaterial,
+  )
+  lid.name = 'eye-half-lid'
+  open.add(lid)
+  const tearMaterial = new THREE.MeshPhysicalMaterial({
+    color: '#69cfff', roughness: 0.15, clearcoat: 1,
+    emissive: '#338ac7', emissiveIntensity: 0.18,
+  })
+  materials.add(tearMaterial)
+  const tear = new THREE.Mesh(
+    pillowSurface(
+      [
+        [0, 0.05], [0.025, 0.005], [0.037, -0.04],
+        [0, -0.067], [-0.037, -0.04], [-0.025, 0.005],
+      ],
+      (_x, _y, r) => 0.01 + 0.018 * (1 - r * r),
+      5,
+    ),
+    tearMaterial,
+  )
+  tear.name = 'eye-tear'
+  tear.position.set(-0.085, -0.19, 0.075)
+  group.add(tear)
+  head.add(group)
+  return { group, open, closed, lid, tear, gaze, iris, pupil, heart }
 }
 
 function buildAccessories(
@@ -350,6 +850,7 @@ function buildAccessories(
   accessories: { kind: string; color?: string; socket?: string }[],
   props: { id: string; socket: string; color?: string }[],
   style: StylePreset,
+  materials: Set<THREE.Material>,
 ): void {
   for (const item of accessories) {
     const socket = socketForAccessory(item.kind, item.socket)
@@ -358,9 +859,17 @@ function buildAccessories(
     holder.position.set(socket.position.x, socket.position.y - 0.08, socket.position.z)
     parent.add(holder)
     const color = new THREE.Color(item.color ?? '#8ed9cc')
-    const mat = style.material.mode === 'glass'
-      ? new THREE.MeshPhysicalMaterial({ color, transmission: 0.4, roughness: 0.2, emissive: color, emissiveIntensity: 0.2 })
-      : new THREE.MeshStandardMaterial({ color, roughness: 0.45 })
+    const mat =
+      style.material.mode === 'glass'
+        ? new THREE.MeshPhysicalMaterial({
+            color,
+            transmission: 0.4,
+            roughness: 0.2,
+            emissive: color,
+            emissiveIntensity: 0.2,
+          })
+        : new THREE.MeshStandardMaterial({ color, roughness: 0.45 })
+    materials.add(mat)
     if (item.kind === 'bow') {
       const left = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), mat)
       left.scale.set(1.4, 0.8, 0.5)
@@ -375,6 +884,7 @@ function buildAccessories(
       holder.add(band)
     } else if (item.kind === 'glasses') {
       const glass = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 })
+      materials.add(glass)
       const l = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.01, 8, 16), glass)
       l.position.x = -0.12
       const r = l.clone()
@@ -408,142 +918,303 @@ function buildAccessories(
   }
 }
 
-function outlineAndFur(parent: THREE.Object3D, source: THREE.Mesh, style: StylePreset, tier: QualityTier, tints: Tint[]): void {
-  const width = style.outline.width * 0.004 * (style.outline.passes > 0 ? 1 : 0)
-  if (width > 0) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: style.outline.color,
-      side: THREE.BackSide,
-      transparent: style.outline.opacity < 1,
-      opacity: style.outline.opacity,
-    })
-    inflate(mat, width)
-    const shell = new THREE.Mesh(source.geometry, mat)
-    shell.position.copy(source.position)
-    shell.rotation.copy(source.rotation)
-    shell.scale.copy(source.scale)
-    parent.add(shell)
-    tints.push({ material: mat, slot: 'outline' })
-    if (style.outline.passes === 2) {
-      const soft = mat.clone()
-      soft.opacity = 0.35
-      inflate(soft, width * 1.8)
-      const outer = new THREE.Mesh(source.geometry, soft)
-      outer.position.copy(source.position)
-      outer.rotation.copy(source.rotation)
-      outer.scale.copy(source.scale)
-      parent.add(outer)
-      tints.push({ material: soft, slot: 'outline' })
-    }
-  }
-  const shells = style.material.furShells[tier] ?? 0
-  if (shells <= 0 || style.material.mode !== 'fur') return
-  const tex = tier === 'low' ? null : furAlpha()
-  for (let i = 1; i <= shells; i += 1) {
-    const mat = new THREE.MeshStandardMaterial({
-      color: '#ffffff',
-      roughness: 1,
-      transparent: true,
-      opacity: tier === 'low' ? 0.28 : 0.22,
-      alphaMap: tex ?? undefined,
-      depthWrite: false,
-    })
-    inflate(mat, style.material.furLength * (i / shells))
-    const shell = new THREE.Mesh(source.geometry, mat)
-    shell.position.copy(source.position)
-    shell.rotation.copy(source.rotation)
-    shell.scale.copy(source.scale)
-    parent.add(shell)
-    tints.push({ material: mat, slot: 'body' })
-  }
-}
-
-function inflate(material: THREE.Material, amount: number): void {
+/** Expand in object space using the normal attribute, available in basic and lit shaders. */
+export function inflate(material: THREE.Material, amount: number): void {
+  const grow = { value: amount }
+  material.userData.grow = grow
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uGrow = { value: amount }
+    shader.uniforms.uGrow = grow
     shader.vertexShader = `uniform float uGrow;\n${shader.vertexShader.replace(
       '#include <begin_vertex>',
-      '#include <begin_vertex>\n transformed += normalize(objectNormal) * uGrow;',
+      '#include <begin_vertex>\ntransformed += normalize(normal) * uGrow;',
     )}`
+  }
+  material.customProgramCacheKey = () => `pet-inflate-v2:${amount}`
+}
+
+function surfaceFinish(
+  source: THREE.Mesh,
+  style: StylePreset,
+  tier: QualityTier,
+  tints: Tint[],
+  materials: Set<THREE.Material>,
+  noise?: THREE.Texture,
+  glowTier: QualityTier = tier,
+): void {
+  if (style.id === 'glass' && glowTier !== 'low') {
+    const layers = glowTier === 'high' ? 3 : 2
+    for (let i = 0; i < layers; i++) {
+      const halo = new THREE.ShaderMaterial({
+        uniforms: { strength: { value: [0.12, 0.045, 0.015][i] } },
+        vertexShader: `varying vec3 haloNormal; varying vec3 haloView;
+          void main() {
+            vec3 expanded = position + normal * ${[0.012, 0.032, 0.06][i]};
+            vec4 view = modelViewMatrix * vec4(expanded,1.0);
+            haloNormal = normalize(normalMatrix * normal); haloView = -view.xyz;
+            gl_Position = projectionMatrix * view;
+          }`,
+        fragmentShader: `uniform float strength; varying vec3 haloNormal; varying vec3 haloView;
+          void main() {
+            float rim = pow(1.0-abs(dot(normalize(haloNormal),normalize(haloView))),2.0);
+            gl_FragColor = vec4(mix(vec3(0.35,0.24,1.0),vec3(0.18,0.92,1.0),rim),rim * strength);
+          }`,
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+      materials.add(halo)
+      const shell = new THREE.Mesh(source.geometry, halo)
+      shell.name = 'glass-halo'
+      shell.userData.ignoreFraming = true
+      source.add(shell)
+    }
+  }
+  // The shell is parented to the surface so later pose/shape changes stay aligned.
+  if (style.id === 'anime') {
+    const m = new THREE.MeshBasicMaterial({ color: style.outline.color, side: THREE.BackSide })
+    inflate(m, 0.007)
+    materials.add(m)
+    tints.push({ material: m, slot: 'outline' })
+    const shell = new THREE.Mesh(source.geometry, m)
+    shell.name = 'outline'
+    source.add(shell)
+  }
+  if (style.material.mode !== 'fur') return
+  const base = Array.isArray(source.material) ? source.material : [source.material]
+  const layers = style.material.furShells[tier]
+  for (let i = 1; i <= layers; i++) {
+    const shellMaterials = base.map((original) => {
+      const tint = tints.find((t) => t.material === original)
+      const m = new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        vertexColors: original instanceof THREE.MeshStandardMaterial && original.vertexColors,
+        roughness: 1,
+        alphaMap: noise,
+        alphaTest: 0.36 + (i / layers) * 0.18,
+        transparent: true,
+        opacity: 0.65 * (1 - i / (layers + 1)),
+        depthWrite: false,
+      })
+      inflate(m, style.material.furLength * (i / layers) * 0.8)
+      materials.add(m)
+      tints.push({ material: m, slot: tint?.slot ?? 'body' })
+      return m
+    })
+    const shell = new THREE.Mesh(
+      source.geometry,
+      shellMaterials.length === 1 ? shellMaterials[0] : shellMaterials,
+    )
+    shell.name = `fur-shell-${i}`
+    source.add(shell)
   }
 }
 
-function materialFor(style: StylePreset, color: string, slot: string): THREE.MeshStandardMaterial | THREE.MeshToonMaterial | THREE.MeshPhysicalMaterial {
-  const tint = new THREE.Color(color)
-  if (style.material.mode === 'toon') {
-    return new THREE.MeshToonMaterial({ color: tint, gradientMap: toonGradient(style) })
+function materialFor(
+  style: StylePreset,
+  slot: string,
+  tier: QualityTier,
+  gradient?: THREE.Texture,
+  noise?: THREE.Texture,
+): PetMaterial {
+  if (style.id === 'anime') {
+    const material = new THREE.MeshToonMaterial({ color: '#ffffff', gradientMap: gradient })
+    // Art-directed warm cel bands keep cream clean and orange shadows saturated.
+    material.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>', `
+        float cel = smoothstep(0.30, 0.32, dot(normal, normalize(vec3(-0.4,0.7,1.0))));
+        outgoingLight = diffuseColor.rgb * mix(vec3(0.94,0.78,0.63),vec3(1.04,1.02,1.0),cel);
+        #include <opaque_fragment>
+      `)
+    }
+    material.customProgramCacheKey = () => 'pet-warm-cel-v1'
+    return material
   }
-  if (style.material.mode === 'glass') {
-    return new THREE.MeshPhysicalMaterial({
-      color: tint,
-      roughness: slot === 'eye' ? 0.05 : style.material.roughness,
-      metalness: style.material.metalness,
-      transmission: style.material.transmission,
-      thickness: style.material.thickness,
-      ior: 1.35,
-      transparent: true,
-      iridescence: style.material.iridescence,
-      iridescenceIOR: 1.25,
-      emissive: new THREE.Color(style.palette.glow),
-      emissiveIntensity: style.material.emissive,
-      attenuationColor: tint,
-      attenuationDistance: 0.5,
+  if (style.id === 'glass') {
+    const material = new THREE.MeshPhysicalMaterial({
+      color: '#9bcfff',
+      vertexColors: true,
+      roughness: tier === 'low' ? 0.29 : 0.22,
+      metalness: 0,
+      transmission: tier === 'low' ? 0 : tier === 'medium' ? 0.45 : style.material.transmission,
+      thickness: 0.3,
+      ior: 1.32,
+      iridescence: 1,
+      iridescenceIOR: 1.32,
+      iridescenceThicknessRange: [180, 520],
+      emissive: '#7b6de8',
+      emissiveIntensity: slot === 'belly' ? 0.3 : 0.19,
       clearcoat: 1,
-      clearcoatRoughness: 0.15,
+      clearcoatRoughness: 0.18,
+      envMapIntensity: 0.65,
     })
+    innerGlow(material)
+    return material
   }
-  return new THREE.MeshStandardMaterial({
-    color: tint,
-    roughness: style.material.roughness,
-    metalness: style.material.metalness,
-    emissive: tint,
-    emissiveIntensity: style.material.mode === 'fur' ? style.material.emissive : 0.03,
+  return new THREE.MeshPhysicalMaterial({
+    color: '#ffffff',
+    roughness: style.id === 'plush' ? 0.97 : 0.54,
+    metalness: 0,
+    clearcoat: style.id === 'plush' ? 0 : 0.12,
+    clearcoatRoughness: 0.52,
+    sheen: style.id === 'plush' ? 1 : 0.16,
+    sheenColor: new THREE.Color('#ffdfbc'),
+    sheenRoughness: 0.85,
+    envMapIntensity: 0.16,
+    bumpMap: noise ?? null,
+    bumpScale: style.id === 'plush' ? 0.008 : 0,
   })
 }
 
-function toonGradient(style: StylePreset): THREE.DataTexture {
-  const key = `${style.material.toonBands}:${style.material.toonShadow}`
-  const cached = toonCache.get(key)
-  if (cached) return cached
-  const bands = Math.max(2, style.material.toonBands)
-  const data = new Uint8Array(bands)
-  for (let i = 0; i < bands; i += 1) {
-    const t = bands === 1 ? 1 : i / (bands - 1)
-    data[i] = Math.round(style.material.toonShadow * 180 + t * (255 - style.material.toonShadow * 180))
+function glassColors(geometry: THREE.BufferGeometry): void {
+  const p = geometry.getAttribute('position'),
+    colors: number[] = []
+  const a = new THREE.Color('#57e9ff'),
+    b = new THREE.Color('#c080ff')
+  for (let i = 0; i < p.count; i++) {
+    const t = THREE.MathUtils.clamp(0.45 + p.getX(i) * 0.65 + p.getY(i) * 0.15, 0, 1)
+    const color = a.clone().lerp(b, t)
+    colors.push(color.r, color.g, color.b)
   }
-  const texture = new THREE.DataTexture(data, bands, 1)
-  texture.format = THREE.RedFormat
-  texture.minFilter = THREE.NearestFilter
-  texture.magFilter = THREE.NearestFilter
-  texture.wrapS = THREE.ClampToEdgeWrapping
-  texture.colorSpace = THREE.NoColorSpace
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+}
+
+function toonGradient(style: StylePreset): THREE.DataTexture {
+  const bands = Math.max(2, Math.min(3, style.material.toonBands))
+  const data = new Uint8Array(bands * 4)
+  for (let i = 0; i < bands; i++) {
+    const light = Math.round(100 + (i / (bands - 1)) * 155)
+    data.set([light, light, light, 255], i * 4)
+  }
+  const texture = new THREE.DataTexture(data, bands, 1, THREE.RGBAFormat)
+  texture.minFilter = texture.magFilter = THREE.NearestFilter
   texture.needsUpdate = true
-  toonCache.set(key, texture)
   return texture
 }
 
-function furAlpha(): THREE.CanvasTexture {
-  if (furTexture) return furTexture
-  const canvas = document.createElement('canvas')
-  canvas.width = 128
-  canvas.height = 128
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    furTexture = new THREE.CanvasTexture(canvas)
-    return furTexture
+/** Seeded grain; alphaMap reads GREEN, not the alpha channel. No DOM/canvas dependency. */
+function furTexture(): THREE.DataTexture {
+  const size = 128,
+    data = new Uint8Array(size * size * 4)
+  let seed = 7391
+  for (let i = 0; i < data.length; i += 4) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    const value = seed >>> 24
+    data.set([value, value, value, 255], i)
   }
-  const image = ctx.createImageData(128, 128)
-  for (let i = 0; i < image.data.length; i += 4) {
-    const solid = Math.random() > 0.42
-    image.data[i] = 255
-    image.data[i + 1] = 255
-    image.data[i + 2] = 255
-    image.data[i + 3] = solid ? 255 : 0
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping
+  texture.repeat.set(5, 3)
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  return texture
+}
+
+function contactTexture(): THREE.DataTexture {
+  const size = 64,
+    data = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const r = Math.hypot((x + 0.5 - size / 2) / (size / 2), (y + 0.5 - size / 2) / (size / 2))
+      const alpha = Math.round(Math.max(0, Math.exp(-r * r * 5) - Math.exp(-5)) * 255)
+      data.set([255, 255, 255, alpha], (y * size + x) * 4)
+    }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  return texture
+}
+
+/** Analytic pigmentation stays crisp at every LOD and follows the muzzle through its fur shells. */
+function paintMarkings(
+  material: THREE.Material,
+  body: THREE.Color,
+  cream: THREE.Color,
+  pattern: 'face' | 'chest',
+  blush: THREE.Color,
+  blushStrength: { value: number },
+): void {
+  material.userData.faceMask = true
+  const before = material.onBeforeCompile.bind(material),
+    key = material.customProgramCacheKey()
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer)
+    shader.uniforms.uFaceBody = { value: body }
+    shader.uniforms.uFaceCream = { value: cream }
+    shader.uniforms.uBlushColor = { value: blush }
+    shader.uniforms.uBlushStrength = blushStrength
+    shader.vertexShader =
+      'varying vec3 vPetLocal;\n' +
+      shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvPetLocal = position;')
+    shader.fragmentShader =
+      'varying vec3 vPetLocal;\nuniform vec3 uFaceBody;\nuniform vec3 uFaceCream;\nuniform vec3 uBlushColor;\nuniform float uBlushStrength;\n' +
+      shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+      ${
+        pattern === 'face'
+          ? `
+        float snout = length(vec2(vPetLocal.x / 0.315, (vPetLocal.y + 0.285) / 0.205));
+        float cheekEdge = -0.255 + 0.11 * smoothstep(0.26,0.56,abs(vPetLocal.x));
+        float cheek = 1.0 + (vPetLocal.y-cheekEdge)*10.0 + max(0.0,0.25-abs(vPetLocal.x))*8.0;
+        float chin = length(vec2(vPetLocal.x / 0.34, (vPetLocal.y+0.40) / 0.11));
+        float mask = (1.0-smoothstep(0.98,1.02,min(snout,min(cheek,chin)))) * smoothstep(-0.12,0.06,vPetLocal.z);
+      `
+          : `
+        float height = clamp((vPetLocal.y+0.29)/0.64,0.0,1.0);
+        float width = 0.235 * pow(height,0.63);
+        float mask = (1.0-smoothstep(width-0.003,width+0.003,abs(vPetLocal.x))) * smoothstep(-0.30,-0.28,vPetLocal.y) * smoothstep(0.10,0.22,vPetLocal.z);
+      `
+      }
+      vec3 pigment = mix(uFaceBody, uFaceCream, mask);
+      ${
+        pattern === 'face'
+          ? `float blush = exp(-pow((abs(vPetLocal.x)-0.40)/0.073,2.0)-pow((vPetLocal.y+0.16)/0.042,2.0))*smoothstep(0.12,0.23,vPetLocal.z);
+      `
+          : ''
+      }
+      diffuseColor.rgb *= pigment;
+      ${pattern === 'face' ? 'diffuseColor.rgb = mix(diffuseColor.rgb,uBlushColor,blush*uBlushStrength);' : ''}
+      ${material instanceof THREE.MeshToonMaterial ? '' : `diffuseColor.rgb *= mix(0.86,1.0,smoothstep(0.0,0.39,vPetLocal.z));`}
+    `,
+      )
   }
-  ctx.putImageData(image, 0, 0)
-  furTexture = new THREE.CanvasTexture(canvas)
-  furTexture.wrapS = THREE.RepeatWrapping
-  furTexture.wrapT = THREE.RepeatWrapping
-  furTexture.repeat.set(5, 5)
-  return furTexture
+  material.customProgramCacheKey = () => `${key}:pet-${pattern}-mask-v5`
+}
+
+/** A narrow pigment blend follows the curved seam, including the plush fur layers. */
+function paintTailTip(material: THREE.Material, body: THREE.Color, cream: THREE.Color): void {
+  material.userData.faceMask = true
+  const before = material.onBeforeCompile.bind(material)
+  const key = material.customProgramCacheKey()
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer)
+    shader.uniforms.uTailBody = { value: body }
+    shader.uniforms.uTailCream = { value: cream }
+    shader.vertexShader = 'varying vec2 vPetTailUV;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>', '#include <begin_vertex>\nvPetTailUV = uv;',
+    )
+    shader.fragmentShader = 'varying vec2 vPetTailUV;\nuniform vec3 uTailBody;\nuniform vec3 uTailCream;\n' +
+      shader.fragmentShader.replace('#include <color_fragment>', `
+        #include <color_fragment>
+        float seam = 0.69 + 0.014 * cos(vPetTailUV.x * 6.2831853);
+        float cream = smoothstep(seam-0.014,seam+0.014,vPetTailUV.y);
+        diffuseColor.rgb *= mix(uTailBody,uTailCream,cream);
+      `)
+  }
+  material.customProgramCacheKey = () => `${key}:pet-soft-tail-v1`
+}
+
+/** Fresnel emission gives a luminous silhouette without a postprocessing render target. */
+function innerGlow(material: THREE.MeshPhysicalMaterial): void {
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      float petRim = pow(1.0-abs(dot(normal,normalize(vViewPosition))),2.2);
+      totalEmissiveRadiance += mix(vec3(0.10,0.25,0.60),vec3(0.16,0.80,1.0),petRim) * (0.08+petRim*0.55);
+    `,
+    )
+  }
+  material.customProgramCacheKey = () => 'pet-hologram-v2'
 }

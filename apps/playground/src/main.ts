@@ -2,6 +2,7 @@ import './editor.css'
 import {
   ACTION_CATALOG,
   PRESET_COLORS,
+  POSES,
   SPECIES_PART_DEFAULTS,
   listStyles,
   type Emotion,
@@ -47,6 +48,12 @@ app.innerHTML = shell()
 const pet = app.querySelector('yk-pet') as YkPetElement
 pet.preference = (query.get('renderer') as RendererPreference) || '2d'
 pet.config = { behavior: { autonomous: true } }
+const styleParam = query.get('style') as PetStyleId | null
+if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
+const poseParam = query.get('pose')
+if (poseParam === 'sit' || poseParam === 'stand') pet.setConfig({ appearance: { pose: poseParam } })
+const emotionParam = query.get('emotion')
+if (emotionParam) window.setTimeout(() => pet.setEmotion(emotionParam), 300)
 applyTheme()
 bind()
 refresh()
@@ -221,6 +228,7 @@ function paintSimple(config: PetConfig): void {
   appearance.innerHTML = `
     <h2>${t('species')}</h2>
     <div class="chips">${(['fox', 'cat', 'bunny', 'custom'] as Species[]).map(id => `<button type="button" class="chip" data-species="${id}" aria-pressed="${config.species === id}">${t(id)}</button>`).join('')}</div>
+    ${poseControl(config)}
     ${slider(t('bodySize'), 'bodyScale', config.appearance.proportions.bodyScale, 0.6, 1.6)}
     <h2>${t('earShape')}</h2>
     <div class="ears">${EARS.map(id => `<button type="button" class="ear" data-ear="${id}" aria-pressed="${config.appearance.parts.ears === id}">${t(id)}</button>`).join('')}</div>
@@ -234,6 +242,7 @@ function paintSimple(config: PetConfig): void {
     pet.setConfig({ species, appearance: { parts: SPECIES_PART_DEFAULTS[species] } })
     refresh()
   }))
+  bindPoseControl(appearance)
   bindRange(appearance, 'bodyScale', value => pet.setConfig({ appearance: { proportions: { bodyScale: value } } }))
   appearance.querySelectorAll<HTMLButtonElement>('[data-ear]').forEach(button => button.addEventListener('click', () => {
     pet.setConfig({ appearance: { parts: { ears: button.dataset.ear as PetConfig['appearance']['parts']['ears'] } } })
@@ -313,6 +322,8 @@ function paintPro(config: PetConfig): void {
         <select id="quality">${['auto', 'low', 'medium', 'high'].map(id => `<option value="${id}" ${config.renderer.quality === id ? 'selected' : ''}>${t(id as MessageKey)}</option>`).join('')}</select>
       </label>`
   }
+  host.insertAdjacentHTML('afterbegin', poseControl(config))
+  bindPoseControl(host)
   host.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(input => {
     const key = input.dataset.key || ''
     input.addEventListener('input', () => {
@@ -330,6 +341,20 @@ function paintPro(config: PetConfig): void {
   host.querySelector('#quality')?.addEventListener('change', (event) => {
     pet.setConfig({ renderer: { quality: (event.target as HTMLSelectElement).value as PetConfig['renderer']['quality'] } })
   })
+}
+
+function poseControl(config: PetConfig): string {
+  return `<h2>${t('pose')}</h2><div class="chips" role="group" aria-label="${t('pose')}">${POSES.map(pose =>
+    `<button type="button" class="chip" data-pose="${pose}" aria-pressed="${(config.appearance.pose ?? 'sit') === pose}">${t(pose)}</button>`,
+  ).join('')}</div>`
+}
+
+function bindPoseControl(host: HTMLElement): void {
+  host.querySelectorAll<HTMLButtonElement>('[data-pose]').forEach(button => button.addEventListener('click', () => {
+    const pose = button.dataset.pose === 'stand' ? 'stand' : 'sit'
+    pet.setConfig({ appearance: { pose } })
+    refresh()
+  }))
 }
 
 function paintActions(): void {

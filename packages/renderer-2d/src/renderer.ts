@@ -5,6 +5,7 @@
 import type { PetRenderer, PetRendererSnapshot, PetVisualState, SpriteSheetConfig } from '@yk-pet/core'
 import { drawPet } from './draw'
 import { spriteFrame } from './sprites'
+import { transitionPose, type PoseTransition } from './pose'
 
 export interface Canvas2DOptions {
   width?: number
@@ -30,6 +31,8 @@ export class Canvas2DPetRenderer implements PetRenderer {
   #dpr: number
   #image: HTMLImageElement | null = null
   #imageUrl = ''
+  #poseTransition: PoseTransition | undefined
+  #hasState = false
 
   constructor(private readonly options: Canvas2DOptions = {}) {
     this.#width = options.width ?? 360
@@ -63,7 +66,7 @@ export class Canvas2DPetRenderer implements PetRenderer {
       this.#elapsed += dt
       this.options.onFrame?.(dt)
       const next = this.options.getState?.()
-      if (next) this.#state = next
+      if (next) { this.#state = next; this.#hasState = true }
       this.#syncSprite(this.#state.sprite)
       this.#paint()
       this.#frame = requestAnimationFrame(loop)
@@ -85,6 +88,7 @@ export class Canvas2DPetRenderer implements PetRenderer {
 
   update(state: PetVisualState): void {
     this.#state = state
+    this.#hasState = true
     this.#syncSprite(state.sprite)
     if (!this.#frame) this.#paint()
   }
@@ -105,7 +109,8 @@ export class Canvas2DPetRenderer implements PetRenderer {
   }
 
   restore(snapshot: PetRendererSnapshot): void {
-    if (snapshot.state) this.#state = snapshot.state
+    if (snapshot.state) { this.#state = snapshot.state; this.#hasState = true }
+    this.#poseTransition = undefined
     const payload = snapshot.payload as { elapsed?: number } | undefined
     if (typeof payload?.elapsed === 'number') this.#elapsed = payload.elapsed
     this.#paint()
@@ -122,7 +127,12 @@ export class Canvas2DPetRenderer implements PetRenderer {
   #paint(): void {
     if (!this.#ctx) return
     if (this.#drawSprite()) return
-    drawPet(this.#ctx, this.#width, this.#height, this.#dpr, this.#state, this.#elapsed, this.options.getYaw?.() ?? 0)
+    if (this.#hasState) {
+      this.#poseTransition = transitionPose(this.#poseTransition, this.#state.appearance?.pose,
+        performance.now() / 1000, this.#state.reducedMotion)
+    }
+    drawPet(this.#ctx, this.#width, this.#height, this.#dpr, this.#state, this.#elapsed,
+      this.options.getYaw?.() ?? 0, this.#poseTransition?.amount)
   }
 
   #syncSprite(sprite: SpriteSheetConfig | undefined): void {

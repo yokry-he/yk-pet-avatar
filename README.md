@@ -86,12 +86,22 @@ pnpm add @yk-pet/3d
 
 | id | 序号 | 2D | 3D |
 | --- | --- | --- | --- |
-| `kawaii`（默认） | 1 | 完整：粗软描边、大眼睛、腮红 | 软光照 + 双层描边 |
-| `anime` | 4 | 完整：硬描边、二分阴影 | `MeshToonMaterial` + 硬描边 |
-| `plush` | 5 | 近似：绒边、缝线、玻璃眼 | 毛壳；弱设备少层 |
-| `glass` | 6 | 近似：半透明渐变、霓虹描边 | 透射、虹彩、发光环 |
+| `kawaii`（默认） | 1 | 细暖棕描边、Q版比例（大圆头、短胖前爪、肉垫）、柔和渐变、大眼双高光、腮红 | 雕塑式程序化 Q 版狐狸（头、耳、口鼻、脸颊绒毛、身体、前后爪、蓬松尾巴），柔光+轮廓光 |
+| `anime` | 4 | 细深色线、硬二分阴影、动漫高光眼 | `MeshToonMaterial` 分级阴影 + 反向外壳描边 |
+| `plush` | 5 | 无硬描边、毛毡纹理、细绒边（近似） | 可编译的毛壳着色 + 绒感高光，弱设备降为 1 层 |
+| `glass` | 6 | 半透明青紫渐变、发光边缘、闪光（近似） | 透射 + 虹彩 + 内发光 + 发光环，开销大时降级 |
 
 再加一种风格：在 `STYLE_PRESETS` 里加一条，`material.mode` 仍用 `soft` / `toon` / `fur` / `glass` 时渲染器不用改。
+
+## 美术（v2 第一阶段）
+
+- idle 动画：呼吸、随机眨眼（含偶尔双眨）、耳朵抖动、尾巴摆动、头部轻摆
+- 十种情绪（neutral happy sad excited angry shy surprised love tired focused）在 2D/3D 都有面部表现
+- 3D 自动取景，整只宠物带耳朵都在画面内
+- 修复 v1 毛壳着色器 objectNormal 编译错误
+- playground 支持 ?style= 和 ?emotion= 参数用于截图
+- 新增姿势 appearance.pose: 'sit'（默认，不写时等同 sit，向后兼容）| 'stand'（用后腿站立）。2D 和 3D、四种风格都支持；运行时切换有约 0.6 秒的平滑过渡，reducedMotion 时直接切换。示例代码: pet.setConfig({ appearance: { pose: 'stand' } })；playground 用 ?pose=stand，简洁模式外观面板里有 坐/站 切换。导出 POSES 和 PetPose 类型。
+- 3D 改进：圆润的奶油色口鼻 + 脸颊绒毛；anime 白色区域干净不发灰；happy 是 ^ ^ 眯眼，love 是爱心眼；尾巴尖过渡平滑；glass 有低成本的发光光晕，弱设备/低画质时关闭。
 
 ## Agent API
 

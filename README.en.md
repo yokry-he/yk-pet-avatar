@@ -17,6 +17,23 @@ pnpm build
 
 Playground query flags: `?theme=soft|pro|glass&mode=simple|pro&lang=zh|en&renderer=2d|3d&say=1`.
 
+## Art (v2 phase 1)
+
+- idle animation: breathing, random blinking (with occasional double blinks), ear twitches, tail sway, gentle head motion
+- ten emotions (neutral, happy, sad, excited, angry, shy, surprised, love, tired, focused) with facial expressions in both 2D and 3D
+- 3D auto-framing keeps the whole pet, including ears, in frame
+- fixed the v1 fur shell shader `objectNormal` compile error
+- playground supports `?style=` and `?emotion=` params for screenshots
+- New pose `appearance.pose`: `'sit'` (default, omitted means sit, backward-compatible) | `'stand'` (standing on hind legs). Supported in 2D and 3D across all four styles; switching at runtime has about a 0.6 s smooth transition, or an instant swap when `reducedMotion` is enabled. Example: `pet.setConfig({ appearance: { pose: 'stand' } })`; playground uses `?pose=stand`, and the simple-mode appearance panel has a sit/stand toggle. Exports `POSES` and `PetPose` type.
+- 3D improvements: rounded cream muzzle + cheek fluff; anime white areas stay clean without grey tint; happy uses ^ ^ squinting eyes, love uses heart eyes; smoother tail-tip transition; glass has a low-cost glow halo that turns off on weak devices / low quality.
+
+| id | index | 2D | 3D |
+| --- | --- | --- | --- |
+| `kawaii` (default) | 1 | warm thin brown outlines, chibi proportions (large round head, short chunky front paws, paw pads), soft gradients, big eyes with double highlights, blush | sculpted procedural chibi fox (head, ears, muzzle, cheek fluff, body, front/back paws, fluffy tail), soft + rim light |
+| `anime` | 4 | thin dark outlines, hard two-tone shading, anime highlight eyes | `MeshToonMaterial` stepped shading + inverted hull outlines |
+| `plush` | 5 | no hard outlines, felt texture, fine fuzzy edges (approximate) | compilable fur shell shader + fuzzy highlight, drops to 1 shell on weak devices |
+| `glass` | 6 | translucent cyan-purple gradient, glowing edge, sparkle (approximate) | transmission + iridescence + inner glow + glowing ring, degrades when heavy |
+
 ## Agent API
 
 ```ts

@@ -15,6 +15,7 @@ export {
   PET_ACTIONS,
   SCHEMA_VERSION,
   SPECIES,
+  POSES,
   TAIL_STYLES,
 } from './types'
 
@@ -61,6 +62,7 @@ export type {
   SpriteSheetConfig,
   StatRates,
   TailStyle,
+  PetPose,
   ValidationIssue,
 } from './types'
 
