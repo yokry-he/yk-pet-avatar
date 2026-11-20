@@ -20,7 +20,7 @@ function sample(transition: PoseTransition, time: number): number {
 export function transitionPose(
   previous: PoseTransition | undefined, pose: PetPose | undefined, time: number, reducedMotion = false,
 ): PoseTransition {
-  const to = pose === 'stand' ? 1 : 0
+  const to = pose === 'stand' || pose === 'anthro' ? 1 : 0
   if (!previous || reducedMotion) return { from: to, to, startedAt: time, amount: to }
   const amount = sample(previous, time)
   if (previous.to !== to) return { from: amount, to, startedAt: time, amount }

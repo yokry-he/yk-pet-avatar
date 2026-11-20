@@ -6,6 +6,7 @@ import type { PetRenderer, PetRendererSnapshot, PetVisualState, SpriteSheetConfi
 import { drawPet } from './draw'
 import { spriteFrame } from './sprites'
 import { transitionPose, type PoseTransition } from './pose'
+import { transitionAnthro, transitionGesture, type GestureTransition } from './anthro'
 
 export interface Canvas2DOptions {
   width?: number
@@ -32,6 +33,8 @@ export class Canvas2DPetRenderer implements PetRenderer {
   #image: HTMLImageElement | null = null
   #imageUrl = ''
   #poseTransition: PoseTransition | undefined
+  #anthroTransition: PoseTransition | undefined
+  #gestureTransition: GestureTransition | undefined
   #hasState = false
 
   constructor(private readonly options: Canvas2DOptions = {}) {
@@ -111,6 +114,8 @@ export class Canvas2DPetRenderer implements PetRenderer {
   restore(snapshot: PetRendererSnapshot): void {
     if (snapshot.state) { this.#state = snapshot.state; this.#hasState = true }
     this.#poseTransition = undefined
+    this.#anthroTransition = undefined
+    this.#gestureTransition = undefined
     const payload = snapshot.payload as { elapsed?: number } | undefined
     if (typeof payload?.elapsed === 'number') this.#elapsed = payload.elapsed
     this.#paint()
@@ -128,11 +133,17 @@ export class Canvas2DPetRenderer implements PetRenderer {
     if (!this.#ctx) return
     if (this.#drawSprite()) return
     if (this.#hasState) {
+      const time = performance.now() / 1000
       this.#poseTransition = transitionPose(this.#poseTransition, this.#state.appearance?.pose,
-        performance.now() / 1000, this.#state.reducedMotion)
+        time, this.#state.reducedMotion)
+      this.#anthroTransition = transitionAnthro(this.#anthroTransition, this.#state.appearance?.pose,
+        time, this.#state.reducedMotion)
+      this.#gestureTransition = transitionGesture(this.#gestureTransition, this.#state.behavior,
+        time, this.#state.reducedMotion)
     }
     drawPet(this.#ctx, this.#width, this.#height, this.#dpr, this.#state, this.#elapsed,
-      this.options.getYaw?.() ?? 0, this.#poseTransition?.amount)
+      this.options.getYaw?.() ?? 0, this.#poseTransition?.amount,
+      this.#anthroTransition?.amount, this.#gestureTransition?.amount)
   }
 
   #syncSprite(sprite: SpriteSheetConfig | undefined): void {
