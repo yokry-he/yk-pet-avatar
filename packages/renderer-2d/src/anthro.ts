@@ -22,19 +22,20 @@ export function anthroBlend(amount: number) {
   return { body: ease((t - 0.3) / 0.4), squashX: 1 + squash * 0.05, squashY: 1 - squash * 0.1 }
 }
 
-export interface GestureWeights { wave: number; proud: number; gather: number }
+export interface GestureWeights { wave: number; proud: number; gather: number; celebrate: number }
 export interface GestureTransition {
   from: GestureWeights
   to: GestureWeights
   amount: GestureWeights
   startedAt: number
 }
-export const GESTURE_TRANSITION_SECONDS = 0.4
+export const GESTURE_TRANSITION_SECONDS = 0.25
 
 export function gestureTarget(action: string): GestureWeights {
   return {
     wave: action === 'wave' ? 1 : 0,
-    proud: action === 'success' || action === 'happy' ? 1 : 0,
+    proud: action === 'happy' ? 1 : 0,
+    celebrate: action === 'success' ? 1 : 0,
     gather: ['thinking', 'eating', 'working', 'sleep'].includes(action) ? 1 : 0,
   }
 }
@@ -49,6 +50,7 @@ export function transitionGesture(previous: GestureTransition | undefined, actio
     wave: lerp(previous.from.wave, previous.to.wave, t),
     proud: lerp(previous.from.proud, previous.to.proud, t),
     gather: lerp(previous.from.gather, previous.to.gather, t),
+    celebrate: lerp(previous.from.celebrate, previous.to.celebrate, t),
   }
   const changed = (Object.keys(to) as (keyof GestureWeights)[]).some(key => to[key] !== previous.to[key])
   return changed ? { from: amount, to, amount, startedAt: time } : { ...previous, amount }
@@ -57,26 +59,33 @@ export function transitionGesture(previous: GestureTransition | undefined, actio
 export interface Point { x: number; y: number }
 export interface ArmRig { shoulder: Point; elbow: Point; wrist: Point; handAngle: number; palm: number }
 
-/** Two fixed-length links keep upper arms/forearms connected through every gesture. */
-export function armRig(side: number, time: number, weights: GestureWeights, reducedMotion = false): ArmRig {
+/** Raised gestures use cartoon reach to clear the chibi head; the shoulder stays fixed. */
+export function armRig(side: number, time: number, weights: GestureWeights, reducedMotion = false,
+  headToBody = 1): ArmRig {
   const t = reducedMotion ? 0 : time
-  const wave = side < 0 ? clamp(weights.wave) : 0
-  const proud = clamp(weights.proud) * (1 - wave)
-  const gather = clamp(weights.gather) * (1 - wave) * (1 - proud)
-  const sway = Math.sin(t * 1.85 + side * 0.5) * 0.035
+  const wave = side > 0 ? clamp(weights.wave) : 0
+  const celebrate = clamp(weights.celebrate) * (1 - wave)
+  const raised = wave + celebrate
+  const proud = clamp(weights.proud) * (1 - raised)
+  const gather = clamp(weights.gather) * (1 - raised) * (1 - proud)
+  const sway = reducedMotion ? 0 : Math.sin(t * 1.85 + side * 0.5) * 0.035
+  const arc = reducedMotion ? 0 : Math.sin(t * 7.5) * 0.32
   let upper = 0.16 + sway
   let lower = -0.10 + sway * 0.5
-  upper = lerp(upper, 1.10, proud)
-  lower = lerp(lower, -1.05, proud)
+  upper = lerp(upper, 1.55, proud)
+  lower = lerp(lower, -0.75, proud)
   upper = lerp(upper, 0.30, gather)
   lower = lerp(lower, -2.35, gather)
-  upper = lerp(upper, 1.38, wave)
-  lower = lerp(lower, 2.88 + Math.sin(t * 7.5) * 0.15, wave)
+  upper = lerp(upper, 2.30, celebrate)
+  lower = lerp(lower, 2.78, celebrate)
+  upper = lerp(upper, 2.35, wave)
+  lower = lerp(lower, 3.02 + arc, wave)
+  const reach = lerp(1, Math.max(2.75, 2.5 * headToBody), raised) + proud * 0.5
   const shoulder = { x: side * 28, y: -17 - side * 1.2 }
-  const elbow = { x: shoulder.x + side * Math.sin(upper) * 27, y: shoulder.y + Math.cos(upper) * 27 }
-  const wrist = { x: elbow.x + side * Math.sin(lower) * 25, y: elbow.y + Math.cos(lower) * 25 }
+  const elbow = { x: shoulder.x + side * Math.sin(upper) * 27 * reach, y: shoulder.y + Math.cos(upper) * 27 * reach }
+  const wrist = { x: elbow.x + side * Math.sin(lower) * 25 * reach, y: elbow.y + Math.cos(lower) * 25 * reach }
   return { shoulder, elbow, wrist,
-    handAngle: -side * (lower + wave * Math.sin(t * 7.5) * 0.18), palm: wave }
+    handAngle: lerp(-side * lower, -side * (Math.PI - 0.36), celebrate), palm: raised }
 }
 
 /** Counter-tilt is confined to the torso; soles remain fixed on the floor. */

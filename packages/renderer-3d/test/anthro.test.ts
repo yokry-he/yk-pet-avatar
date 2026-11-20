@@ -4,6 +4,7 @@ import { APRICOT_COLORS, DEFAULT_PROPORTIONS, SPECIES_PART_DEFAULTS, type PetVis
 import { ANTHRO, advanceGesture, anthroHeadGain, anthroPose, ARM_LENGTHS, GESTURE_DURATION, initialGesture, LEG_LENGTHS, solveLimb, type Point } from '../src/anthro'
 import { anthroForm, limbSleeve, visualBounds } from '../src/sculpt'
 import { createProceduralPet } from '../src/procedural'
+import { gestureTarget, transitionGesture } from '../../renderer-2d/src/anthro'
 
 const distance = (a: Point, b: Point) => Math.hypot(...a.map((n, i) => n - b[i]!))
 const state = (style: PetVisualState['style'] = 'kawaii'): PetVisualState => ({
@@ -12,26 +13,75 @@ const state = (style: PetVisualState['style'] = 'kawaii'): PetVisualState => ({
 })
 
 describe('anthro gesture envelopes', () => {
-  it('blends in and out over 0.4 seconds independently of frame rate', () => {
+  it('matches Canvas action channels and keeps the peak through the rest of the action', () => {
+    for (const action of ['idle', 'wave', 'success', 'happy', 'thinking', 'eating', 'working', 'sleep'] as const) {
+      const target = gestureTarget(action)
+      expect(initialGesture(action).value).toEqual([target.wave, target.proud, target.gather, target.celebrate])
+      const start = transitionGesture(transitionGesture(undefined, 'idle', 0), action, 1)
+      for (const elapsed of [0.125, 0.25, 0.6, 1.5]) {
+        const canvas = transitionGesture(start, action, 1 + elapsed).amount
+        const model = advanceGesture(initialGesture(), action, elapsed).value
+        expect(model).toEqual([canvas.wave, canvas.proud, canvas.gather, canvas.celebrate])
+      }
+    }
+  })
+
+  it('blends in and out over 0.25 seconds independently of frame rate', () => {
     for (const frames of [12, 24, 60]) {
       let gesture = initialGesture()
       for (let i = 0; i < frames; i++) gesture = advanceGesture(gesture, 'wave', GESTURE_DURATION / frames)
-      expect(gesture.value).toEqual([1, 0, 0])
+      expect(gesture.value).toEqual([1, 0, 0, 0])
       for (let i = 0; i < frames; i++) gesture = advanceGesture(gesture, 'idle', GESTURE_DURATION / frames)
       expect(gesture.value[0]).toBeCloseTo(0)
     }
-    expect(advanceGesture(initialGesture(), 'wave', 0.2).value).toEqual([0.5, 0, 0])
+    expect(advanceGesture(initialGesture(), 'wave', 0.125).value).toEqual([0.5, 0, 0, 0])
   })
   it('retargets from the current blend, with static reduced-motion gestures', () => {
-    const middle = advanceGesture(initialGesture(), 'wave', 0.2)
+    const middle = advanceGesture(initialGesture(), 'wave', 0.125)
     expect(advanceGesture(middle, 'success', 0).value).toEqual(middle.value)
-    expect(advanceGesture(middle, 'success', 0.2).value).toEqual([0.25, 0.5, 0])
-    expect(advanceGesture(middle, 'success', 0, true).value).toEqual([0, 1, 0])
-    expect(advanceGesture(initialGesture(), 'wave', -1).value).toEqual([0, 0, 0])
+    expect(advanceGesture(middle, 'success', 0.125).value).toEqual([0.25, 0, 0, 0.5])
+    expect(advanceGesture(middle, 'success', 0, true).value).toEqual([0, 0, 0, 1])
+    expect(advanceGesture(initialGesture(), 'wave', -1).value).toEqual([0, 0, 0, 0])
     expect(anthroPose(0, [1, 0, 0], true)).toEqual(anthroPose(100, [1, 0, 0], true))
     const idle = anthroPose(0, [0, 0, 0], true)
     const proud = anthroPose(0, [0, 1, 0], true)
     proud.arms.forEach((arm, i) => expect(Math.abs(arm.joint[0] - proud.shift)).toBeGreaterThan(Math.abs(idle.arms[i]!.joint[0] - idle.shift) + 0.05))
+  })
+  it('holds wave and success above the head, with an outward V and a broad waving arc', () => {
+    for (const ratio of [1.12, 1.2, 1.36]) for (const time of [0, Math.PI / 15, Math.PI / 5]) {
+      const wave = anthroPose(time, initialGesture('wave').value, false, ratio)
+      const hand = wave.arms[1]!
+      expect(hand.joint[1]).toBeGreaterThan(hand.root[1] + 0.5)
+      // Crown is above the neck by roughly one head radius plus its center offset.
+      expect(hand.end[1] + 0.20).toBeGreaterThan(ANTHRO.neckY + ratio * 1.0)
+      expect(hand.palm).toBe(1)
+      expect(wave.arms[0]!.palm).toBe(0)
+      const success = anthroPose(time, initialGesture('success').value, false, ratio)
+      success.arms.forEach(arm => {
+        expect(arm.end[1] + 0.20).toBeGreaterThan(ANTHRO.neckY + ratio * 0.95)
+        expect(Math.abs(arm.end[0] - success.shift)).toBeGreaterThan(0.9)
+        expect(arm.palm).toBe(1)
+      })
+    }
+    const a = anthroPose(Math.PI / 15, initialGesture('wave').value).arms[1]!
+    const b = anthroPose(Math.PI / 5, initialGesture('wave').value).arms[1]!
+    expect(Math.abs(a.end[0] - b.end[0])).toBeGreaterThan(0.4)
+  })
+
+  it('keeps happy elbows outside the waist and both quiet-action hands gathered', () => {
+    const happy = anthroPose(0, initialGesture('happy').value, true)
+    happy.arms.forEach(arm => {
+      expect(Math.abs(arm.joint[0] - arm.end[0])).toBeGreaterThan(0.20)
+      expect(arm.end[1]).toBeLessThan(ANTHRO.shoulderY)
+      expect(arm.palm).toBe(0)
+    })
+    for (const action of ['thinking', 'eating', 'working', 'sleep'] as const) {
+      const pose = anthroPose(0, initialGesture(action).value, true)
+      pose.arms.forEach(arm => expect(Math.abs(arm.end[0] - pose.shift)).toBeLessThan(0.15))
+    }
+    for (const action of ['wave', 'success', 'happy', 'thinking', 'eating', 'working', 'sleep'] as const) {
+      expect(anthroPose(0, initialGesture(action).value, true)).toEqual(anthroPose(99, initialGesture(action).value, true))
+    }
   })
 })
 
@@ -54,12 +104,16 @@ describe('anthro anatomy and planted contacts', () => {
     }
   })
   it('keeps ankles fixed during breathing and every gesture; elbows clear the hips', () => {
-    for (const weights of [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0]]) {
+    for (const weights of [[0, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [0.5, 0.5, 0, 0], [0.5, 0, 0, 0.5]]) {
       for (const time of [0, 0.25, 1.8, 5]) {
         const pose = anthroPose(time, weights)
         for (const arm of pose.arms) {
-          expect(distance(arm.root, arm.joint)).toBeCloseTo(ARM_LENGTHS[0])
-          expect(distance(arm.joint, arm.end)).toBeCloseTo(ARM_LENGTHS[1])
+          const upper = distance(arm.root, arm.joint), lower = distance(arm.joint, arm.end)
+          expect(upper / lower).toBeCloseTo(ARM_LENGTHS[0] / ARM_LENGTHS[1])
+          expect(upper).toBeGreaterThanOrEqual(ARM_LENGTHS[0] - 1e-8)
+          expect(upper).toBeLessThan(0.9)
+          const idle = anthroPose(time, [0, 0, 0, 0])
+          expect(arm.root).toEqual(idle.arms[pose.arms.indexOf(arm)]!.root)
         }
         pose.legs.forEach((leg, i) => {
           expect(distance(leg.root, leg.joint)).toBeCloseTo(LEG_LENGTHS[0])
@@ -69,7 +123,7 @@ describe('anthro anatomy and planted contacts', () => {
         })
         if (weights[1] === 1) pose.arms.forEach((arm) => {
           expect(Math.abs(arm.joint[0] - pose.shift)).toBeGreaterThan(0.4)
-          expect(arm.end[2]).toBeCloseTo(0.245)
+          expect(arm.end[2]).toBeCloseTo(0.16)
         })
         if (weights[0] === 1) expect(pose.arms[1]!.end[1]).toBeGreaterThan(pose.arms[1]!.root[1])
       }
@@ -139,6 +193,21 @@ describe('styled anthro integration', () => {
         expect(bounds.min.y).toBeGreaterThan(0)
         expect(bounds.min.y).toBeLessThan(0.035)
         expect(new THREE.Vector3(0, 1, 0).transformDirection(foot.matrixWorld).y).toBeCloseTo(1)
+      }
+      for (const action of ['wave', 'success', 'happy', 'thinking', 'eating', 'working', 'sleep'] as const) {
+        pet.update({ ...next, behavior: action }, 2)
+        pet.group.updateMatrixWorld(true)
+        for (const side of ['l', 'r']) {
+          const root = pet.group.getObjectByName(`anthro-shoulder-${side}`)!
+          const mesh = root.getObjectByName('mesh-anthro-arm') as THREE.Mesh
+          const hand = pet.group.getObjectByName(`anthro-hand-${side}`)!
+          for (const key of ['position', 'normal']) expect([...mesh.geometry.getAttribute(key).array].every(Number.isFinite)).toBe(true)
+          for (const layer of mesh.children) expect((layer as THREE.Mesh).geometry).toBe(mesh.geometry)
+          if (action === 'success' || (action === 'wave' && side === 'r')) {
+            expect(visualBounds(hand).max.y).toBeGreaterThan(visualBounds(head).max.y)
+            expect(hand.getObjectByName('anthro-palm-pads')!.visible).toBe(true)
+          }
+        }
       }
       for (const emotion of ['neutral', 'happy', 'sad', 'excited', 'angry', 'shy', 'surprised', 'love', 'tired', 'focused']) {
         pet.update({ ...next, emotion }, 2)

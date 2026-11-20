@@ -746,7 +746,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         const bodyScale = props.bodyScale, heightScale = props.bodyScale * props.bodyLength
         const anthroHeadScale = props.headScale * headGain
         const humanoidPose = anthroPose(time, gesture.value, reduced, anthroHeadScale / bodyScale)
-        anthroRig.update(humanoidPose, gesture.value[0] ?? 0)
+        anthroRig.update(humanoidPose)
         anthroRig.group.scale.set(bodyScale, heightScale, bodyScale)
         head.position.y = THREE.MathUtils.lerp(head.position.y, (ANTHRO.neckY + humanoidPose.breath) * heightScale + 0.46 * anthroHeadScale, a)
         head.scale.setScalar(THREE.MathUtils.lerp(props.headScale, anthroHeadScale, a))

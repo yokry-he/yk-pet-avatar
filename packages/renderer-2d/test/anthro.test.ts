@@ -32,45 +32,71 @@ describe('anthro Canvas rig', () => {
     const idle = transitionGesture(undefined, 'idle', 0)
     const wave = transitionGesture(idle, 'wave', 1)
     expect(wave.amount.wave).toBe(0)
-    expect(transitionGesture(wave, 'wave', 1.2).amount.wave).toBeCloseTo(0.5)
-    expect(transitionGesture(wave, 'wave', 1.4).amount.wave).toBeCloseTo(1)
-    const interrupted = transitionGesture(wave, 'success', 1.2)
-    expect(interrupted.amount).toEqual(transitionGesture(wave, 'wave', 1.2).amount)
-    const proud = transitionGesture(interrupted, 'success', 1.6)
-    expect(proud.amount.proud).toBeCloseTo(1)
-    expect(proud.amount.wave).toBeCloseTo(0)
-    const release = transitionGesture(proud, 'idle', 2)
-    expect(transitionGesture(release, 'idle', 2.2).amount.proud).toBeCloseTo(0.5)
-    expect(transitionGesture(release, 'idle', 2.4).amount.proud).toBeCloseTo(0)
+    expect(transitionGesture(wave, 'wave', 1.125).amount.wave).toBeCloseTo(0.5)
+    expect(transitionGesture(wave, 'wave', 1.25).amount.wave).toBeCloseTo(1)
+    const interrupted = transitionGesture(wave, 'success', 1.125)
+    expect(interrupted.amount).toEqual(transitionGesture(wave, 'wave', 1.125).amount)
+    const success = transitionGesture(interrupted, 'success', 1.6)
+    expect(success.amount.celebrate).toBeCloseTo(1)
+    expect(success.amount.wave).toBeCloseTo(0)
+    const release = transitionGesture(success, 'idle', 2)
+    expect(transitionGesture(release, 'idle', 2.125).amount.celebrate).toBeCloseTo(0.5)
+    expect(transitionGesture(release, 'idle', 2.25).amount.celebrate).toBeCloseTo(0)
     expect(transitionGesture(wave, 'success', 1.1, true).amount).toEqual(gestureTarget('success'))
   })
 
-  it('keeps arm bones connected and fixed length throughout every gesture blend', () => {
-    for (const side of [-1, 1]) for (const action of ['idle', 'wave', 'success', 'thinking']) {
+  it('keeps connected, proportionate links and fixed shoulders throughout every gesture blend', () => {
+    for (const side of [-1, 1]) for (const action of ['idle', 'wave', 'success', 'happy', 'thinking', 'eating', 'working', 'sleep']) {
       const target = gestureTarget(action)
       for (let frame = 0; frame <= 30; frame++) {
         const blend = frame / 30
         const arm = armRig(side, frame / 60, {
           wave: target.wave * blend, proud: target.proud * blend, gather: target.gather * blend,
+          celebrate: target.celebrate * blend,
         })
-        expect(Math.hypot(arm.elbow.x - arm.shoulder.x, arm.elbow.y - arm.shoulder.y)).toBeCloseTo(27)
-        expect(Math.hypot(arm.wrist.x - arm.elbow.x, arm.wrist.y - arm.elbow.y)).toBeCloseTo(25)
+        const upper = Math.hypot(arm.elbow.x - arm.shoulder.x, arm.elbow.y - arm.shoulder.y)
+        const lower = Math.hypot(arm.wrist.x - arm.elbow.x, arm.wrist.y - arm.elbow.y)
+        expect(upper / lower).toBeCloseTo(27 / 25)
+        expect(upper).toBeGreaterThanOrEqual(27 - 1e-8)
+        expect(upper).toBeLessThan(80)
+        expect(arm.shoulder).toEqual(armRig(side, 0, gestureTarget('idle')).shoulder)
         const edges = limbEdges(arm.shoulder, arm.elbow, arm.wrist, [11, 8.5, 6.5])
         expect([...edges.left, ...edges.right].every(p => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true)
       }
     }
   })
 
-  it('raises the waving hand above its shoulder and opens both elbows in the proud pose', () => {
-    const wave = armRig(-1, 0, gestureTarget('wave'))
-    expect(wave.wrist.y).toBeLessThan(wave.shoulder.y - 10)
-    expect(wave.palm).toBe(1)
-    expect(armRig(1, 0, gestureTarget('wave')).palm).toBe(0)
+  it('holds a high open wave with a visible forearm arc and a separate two-arm celebration', () => {
+    for (const time of [0, Math.PI / 15, Math.PI / 5]) {
+      const wave = armRig(1, time, gestureTarget('wave'))
+      expect(wave.elbow.y).toBeLessThan(wave.shoulder.y - 45)
+      expect(wave.wrist.y).toBeLessThan(-125)
+      expect(wave.palm).toBe(1)
+      expect(armRig(-1, time, gestureTarget('wave')).palm).toBe(0)
+      for (const side of [-1, 1]) {
+        const success = armRig(side, time, gestureTarget('success'))
+        expect(success.wrist.y).toBeLessThan(-125)
+        expect(Math.abs(success.wrist.x)).toBeGreaterThan(95)
+        expect(success.palm).toBe(1)
+      }
+    }
+    const a = armRig(1, Math.PI / 15, gestureTarget('wave'))
+    const b = armRig(1, Math.PI / 5, gestureTarget('wave'))
+    expect(Math.abs(a.wrist.x - b.wrist.x)).toBeGreaterThan(40)
+  })
+
+  it('keeps happy hands at the waist with clear elbow gaps and gathers quiet actions', () => {
     for (const side of [-1, 1]) {
-      const proud = armRig(side, 0, gestureTarget('success'))
-      expect(Math.abs(proud.elbow.x) - Math.abs(proud.wrist.x)).toBeGreaterThan(20)
-      expect(proud.wrist.y).toBeGreaterThan(0)
-      expect(proud.wrist.y).toBeLessThan(35)
+      const happy = armRig(side, 0, gestureTarget('happy'))
+      expect(Math.abs(happy.elbow.x) - Math.abs(happy.wrist.x)).toBeGreaterThan(20)
+      expect(happy.wrist.y).toBeGreaterThan(-10)
+      expect(happy.wrist.y).toBeLessThan(15)
+      expect(happy.palm).toBe(0)
+      for (const action of ['thinking', 'eating', 'working', 'sleep']) {
+        const gathered = armRig(side, 0, gestureTarget(action))
+        expect(Math.abs(gathered.wrist.x)).toBeLessThan(20)
+        expect(gathered.palm).toBe(0)
+      }
     }
   })
 
@@ -81,8 +107,8 @@ describe('anthro Canvas rig', () => {
       expect(rig.legs[1]!.footX - rig.legs[0]!.footX).toBeGreaterThan(34)
       expect(rig.hipTilt * rig.shoulderTilt).toBeLessThan(0)
       expect(anthroRig(t, true)).toEqual(anthroRig(0, true))
-      for (const action of ['idle', 'wave', 'success']) {
-        expect(armRig(-1, t, gestureTarget(action), true)).toEqual(armRig(-1, 0, gestureTarget(action), true))
+      for (const action of ['idle', 'wave', 'success', 'happy', 'thinking', 'eating', 'working', 'sleep']) {
+        for (const side of [-1, 1]) expect(armRig(side, t, gestureTarget(action), true)).toEqual(armRig(side, 0, gestureTarget(action), true))
       }
     }
   })

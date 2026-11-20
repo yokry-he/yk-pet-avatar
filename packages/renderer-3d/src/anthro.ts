@@ -5,7 +5,7 @@ export type Point = readonly [number, number, number]
 export interface Chain { root: Point; joint: Point; end: Point }
 export const ARM_LENGTHS = [0.27, 0.245] as const
 export const LEG_LENGTHS = [0.25, 0.25] as const
-export const GESTURE_DURATION = 0.4
+export const GESTURE_DURATION = 0.25
 // Anthro-only landmarks, measured from the planted sole; sit/stand keep their own rig.
 export const ANTHRO = { torsoY: 0.94, neckY: 1.28, shoulderY: 1.16, hipY: 0.64, ankleY: 0.155, footX: 0.22, tailY: 0.54 } as const
 const clamp = (n: number, min = 0, max = 1) => Math.max(min, Math.min(max, n))
@@ -48,7 +48,8 @@ export interface GestureBlend {
   elapsed: number
 }
 function gestureTarget(action: PetAction): number[] {
-  return [Number(action === 'wave'), Number(action === 'success' || action === 'happy'), Number(action === 'thinking')]
+  return [Number(action === 'wave'), Number(action === 'happy'),
+    Number(['thinking', 'eating', 'working', 'sleep'].includes(action)), Number(action === 'success')]
 }
 export function initialGesture(action: PetAction = 'idle'): GestureBlend {
   const value = gestureTarget(action)
@@ -66,24 +67,34 @@ export function advanceGesture(previous: GestureBlend, action: PetAction, dt: nu
 
 export function anthroPose(time: number, gesture: readonly number[], reduced = false, headToBody = 1) {
   const t = reduced ? 0 : time
-  const wave = gesture[0] ?? 0, proud = gesture[1] ?? 0, think = gesture[2] ?? 0
+  const wave = clamp(gesture[0] ?? 0), proud = clamp(gesture[1] ?? 0), gather = clamp(gesture[2] ?? 0)
+  const celebrate = clamp(gesture[3] ?? 0)
   const shift = -0.012 + (reduced ? 0 : Math.sin(t * 1.15) * 0.006)
   const hipRoll = -0.025, shoulderRoll = 0.025
   const breath = reduced ? 0 : Math.sin(t * 2) * 0.006
-  const cheekClearance = Math.max(0, headToBody - 1)
   const arms = [-1, 1].map((side) => {
-    const root: Point = [side * (0.32 + (side === 1 ? wave * 0.025 : 0)) + shift, ANTHRO.shoulderY + side * 0.008 + breath + (side === 1 ? wave * 0.10 : 0), 0]
+    const greeting = side === 1 ? wave : 0
+    const celebration = celebrate * (1 - greeting)
+    const raised = greeting + celebration
+    const hips = proud * (1 - raised)
+    const gathered = gather * (1 - raised) * (1 - hips)
+    // The root overlaps the torso even at full reach. Only the sleeve length changes.
+    const root: Point = [side * 0.30 + shift, ANTHRO.shoulderY + side * 0.008 + breath, 0]
     const idle: Point = [side * 0.425 + shift, 0.755 + breath, 0.14 + Math.sin(t * 1.5 + side) * (reduced ? 0 : 0.018)]
-    // Keep elbows outside the waist and palms resting on the front of each hip.
-    let wrist = mix(idle, [side * 0.32 + shift, 0.84, 0.245], proud)
-    if (side === 1) {
-      wrist = mix(wrist, [0.69 + cheekClearance * 0.24 + Math.sin(t * 7) * (reduced ? 0 : 0.025), 1.52 - cheekClearance * 0.18, 0.16], wave)
-      wrist = mix(wrist, [0.22, 1.24, 0.36], think)
-    }
+    let wrist = mix(idle, [side * 0.40 + shift, 0.84 + breath, 0.16], hips)
+    wrist = mix(wrist, [side * 0.13 + shift, 1.01 + breath, 0.30], gathered)
+    const arc = reduced ? 0 : Math.sin(t * 7.5) * 0.32
+    const reach = 1 + (2.9 * Math.max(1, headToBody / 1.2) - 1) * raised + hips * 0.5
+    const lengths = ARM_LENGTHS.map(n => n * reach) as [number, number]
+    const upper = 2.30 + greeting * 0.05, lower = 2.78 + greeting * (0.24 + arc)
+    const elbow: Point = [root[0] + side * Math.sin(upper) * lengths[0], root[1] - Math.cos(upper) * lengths[0], 0.08]
+    const high: Point = [elbow[0] + side * Math.sin(lower) * lengths[1], elbow[1] - Math.cos(lower) * lengths[1], 0.08]
+    wrist = mix(wrist, high, raised)
     return {
-      ...solveLimb(root, wrist, mix([side * 0.24, -0.12, 0.65], [side, -0.12, -0.12], Math.max(proud, wave)), ...ARM_LENGTHS),
-      handRoll: side === 1 ? wave * (2.75 + (reduced ? 0 : Math.sin(t * 8) * 0.24)) : 0,
-      handPitch: -proud * 0.32,
+      ...solveLimb(root, wrist, mix([side * 0.24, -0.12, 0.65], [side, 0.05, -0.12], Math.max(hips, raised)), ...lengths),
+      handRoll: side * (greeting * (3.02 + arc) + celebration * (Math.PI - 0.36) - hips * 0.75),
+      handPitch: -hips * 0.32,
+      palm: raised,
     }
   })
   const legs = [-1, 1].map((side) => solveLimb(

@@ -111,7 +111,7 @@ export function createAnthroRig(
         toe.scale.set(0.020, 0.022, 0.007)
       }
     }
-    return { root, joint, end, pads, sleeve, restPosition, restNormal, upperLength: lengths[0] }
+    return { root, joint, end, pads, sleeve, restPosition, restNormal, upperLength: lengths[0], lowerLength: lengths[1], kind }
   }
   const arms = [-1, 1].map((side) => makeChain('arm', side))
   const legs = [-1, 1].map((side) => makeChain('leg', side))
@@ -122,18 +122,24 @@ export function createAnthroRig(
     rig.root.quaternion.setFromUnitVectors(axis, vector(pose.joint).sub(vector(pose.root)).normalize())
     const lower = new THREE.Quaternion().setFromUnitVectors(axis, vector(pose.end).sub(vector(pose.joint)).normalize())
     rig.joint.quaternion.copy(rig.root.quaternion).invert().multiply(lower)
+    const reach = vector(pose.joint).distanceTo(vector(pose.root)) / rig.upperLength
+    rig.joint.position.y = -rig.upperLength * reach
+    if (rig.kind === 'arm') rig.end.position.y = -rig.lowerLength * reach
     // Linear skinning around the elbow/knee preserves a single uninterrupted surface.
     // Shared geometry keeps outline, fur and halo shells in lockstep with the sleeve.
     const p = rig.sleeve.getAttribute('position'), n = rig.sleeve.getAttribute('normal')
     const point = new THREE.Vector3(), normal = new THREE.Vector3(), bent = new THREE.Vector3()
-    const pivot = new THREE.Vector3(0, -rig.upperLength, 0)
+    const pivot = new THREE.Vector3(0, -rig.upperLength * reach, 0)
     for (let i = 0; i < p.count; i++) {
       point.fromArray(rig.restPosition, i * 3)
       const weight = THREE.MathUtils.smoothstep(-point.y, rig.upperLength - 0.095, rig.upperLength + 0.095)
+      point.y *= reach
       bent.copy(point).sub(pivot).applyQuaternion(rig.joint.quaternion).add(pivot)
       point.lerp(bent, weight)
       p.setXYZ(i, point.x, point.y, point.z)
       normal.fromArray(rig.restNormal, i * 3)
+      normal.y /= reach
+      normal.normalize()
       bent.copy(normal).applyQuaternion(rig.joint.quaternion)
       normal.lerp(bent, weight).normalize()
       n.setXYZ(i, normal.x, normal.y, normal.z)
@@ -145,7 +151,7 @@ export function createAnthroRig(
   }
   return {
     group, torsoMesh, collar, arms,
-    update(pose: ReturnType<typeof anthroPose>, wave: number) {
+    update(pose: ReturnType<typeof anthroPose>) {
       torso.position.set(pose.shift, ANTHRO.torsoY + pose.breath, 0)
       torso.rotation.z = pose.shoulderRoll
       torso.scale.y = 1 + pose.breath * 0.6
@@ -156,7 +162,7 @@ export function createAnthroRig(
         const desired = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.handPitch, 0, p.handRoll))
         const forearm = rig.root.quaternion.clone().multiply(rig.joint.quaternion)
         rig.end.quaternion.copy(forearm).invert().multiply(desired)
-        rig.pads.visible = wave > 0.5 && i === 1
+        rig.pads.visible = p.palm > 0.5
       })
       legs.forEach((rig, i) => {
         const p = pose.legs[i]!

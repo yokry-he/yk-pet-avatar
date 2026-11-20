@@ -180,13 +180,14 @@ function drawStructure(env: Env, seated: boolean): void {
   }
   if (body > 0) {
     env.ctx.save(); env.ctx.globalAlpha *= body
+    drawAnthroArms(env, 'sleeves')
     drawAnthroBody(env)
     env.ctx.restore()
   }
   withHead(env, () => { drawEars(env); drawHead(env) })
   if (body > 0) {
     env.ctx.save(); env.ctx.globalAlpha *= body
-    drawAnthroArms(env)
+    drawAnthroArms(env, 'hands')
     env.ctx.restore()
   }
 }
@@ -889,12 +890,16 @@ function drawDigits(env: Env, x: number, y: number, spacing: number): void {
   ctx.restore()
 }
 
-function drawAnthroArms(env: Env): void {
+function drawAnthroArms(env: Env, pass: 'sleeves' | 'hands'): void {
   const { ctx, colors: c } = env
   withAnthroTorso(env, () => {
     for (const side of [-1, 1]) {
-      const arm = armRig(side, env.time, env.gestures, env.reduced)
-      drawLimb(env, arm.shoulder, arm.elbow, arm.wrist, [11, 8.5, 6.5])
+      const arm = armRig(side, env.time, env.gestures, env.reduced,
+        env.proportions.headScale / env.proportions.bodyScale)
+      if (pass === 'sleeves') {
+        drawLimb(env, arm.shoulder, arm.elbow, arm.wrist, [11, 8.5, 6.5])
+        continue
+      }
       ctx.save(); ctx.translate(arm.wrist.x, arm.wrist.y); ctx.rotate(arm.handAngle); ctx.scale(side, 1)
       // The asymmetric thumb is part of the mitten silhouette, rather than a separate sphere.
       paint(env, () => {
@@ -907,7 +912,7 @@ function drawAnthroArms(env: Env): void {
       if (arm.palm > 0 && env.glassPass !== 'mask') {
         ctx.save(); ctx.globalAlpha *= arm.palm
         ellipse(env, 1, 11, 4.4, 4.8, c.blush, 0)
-        for (const x of [-4, 1, 6]) ellipse(env, x, 4, 1.7, 2, c.blush, 0)
+        for (const x of [-4, 1, 6]) ellipse(env, x, 17, 1.7, 2, c.blush, 0)
         ctx.restore()
       }
       ctx.restore()
@@ -965,7 +970,8 @@ function anchor(socket: AttachmentSocket, env: Env): { x: number; y: number; hea
       neck: { x: body.hipX, y: -23 }, chest: { x: body.hipX, y: 3 }, back: { x: body.hipX, y: 12 },
     }
     if (socket.id === 'paw-l' || socket.id === 'paw-r') {
-      const arm = armRig(socket.id === 'paw-l' ? -1 : 1, env.time, env.gestures, env.reduced)
+      const arm = armRig(socket.id === 'paw-l' ? -1 : 1, env.time, env.gestures, env.reduced,
+        env.proportions.headScale / env.proportions.bodyScale)
       const x = arm.wrist.x - Math.sin(arm.handAngle) * 10
       const y = arm.wrist.y + Math.cos(arm.handAngle) * 10
       targets[socket.id] = {
