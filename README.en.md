@@ -25,6 +25,9 @@ Playground query flags: `?theme=soft|pro|glass&mode=simple|pro&lang=zh|en&render
 - fixed the v1 fur shell shader `objectNormal` compile error
 - playground supports `?style=` and `?emotion=` params for screenshots
 - New pose `appearance.pose`: `'sit'` (default, omitted means sit, backward-compatible) | `'stand'` (standing on hind legs). Supported in 2D and 3D across all four styles; switching at runtime has about a 0.6 s smooth transition, or an instant swap when `reducedMotion` is enabled. Example: `pet.setConfig({ appearance: { pose: 'stand' } })`; playground uses `?pose=stand`, and the simple-mode appearance panel has a sit/stand toggle. Exports `POSES` and `PetPose` type.
+- `POSES` is now `'sit' | 'stand' | 'anthro'`. `'anthro'` is an anthropomorphic chibi fox: upright bipedal, about 2–2.5 heads tall, keeps the same large head, face, and expressions; has arms with small paw-pad hands, legs with flat feet, a slight contrapposto stance, and the big tail behind; each style has small accessories (kawaii soft scarf, anime red neckerchief, plush knitted scarf, glass glowing collar). Supported in both 2D and 3D across all four styles.
+- anthro actions: breathing idle with gentle weight shift and arm sway; `pet.play('wave')` waves; `pet.play('success')` or `'happy'` puts hands on hips; thinking/eating/working/sleep keep hands together in front. Switching has about a 0.3–0.5 s smooth transition, or an instant swap when `reducedMotion` is enabled.
+- Example: `pet.setConfig({ appearance: { pose: 'anthro' } })`; playground uses `?pose=anthro` (and `?action=wave`), and the simple-mode appearance panel has a sit / stand / anthro toggle.
 - 3D improvements: rounded cream muzzle + cheek fluff; anime white areas stay clean without grey tint; happy uses ^ ^ squinting eyes, love uses heart eyes; smoother tail-tip transition; glass has a low-cost glow halo that turns off on weak devices / low quality.
 
 | id | index | 2D | 3D |

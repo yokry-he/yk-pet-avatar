@@ -101,6 +101,9 @@ pnpm add @yk-pet/3d
 - 修复 v1 毛壳着色器 objectNormal 编译错误
 - playground 支持 ?style= 和 ?emotion= 参数用于截图
 - 新增姿势 appearance.pose: 'sit'（默认，不写时等同 sit，向后兼容）| 'stand'（用后腿站立）。2D 和 3D、四种风格都支持；运行时切换有约 0.6 秒的平滑过渡，reducedMotion 时直接切换。示例代码: pet.setConfig({ appearance: { pose: 'stand' } })；playground 用 ?pose=stand，简洁模式外观面板里有 坐/站 切换。导出 POSES 和 PetPose 类型。
+- `POSES` 现在是 `'sit' | 'stand' | 'anthro'`。`'anthro'` 是拟人化 Q 版狐狸：直立双足、约 2–2.5 头身，保留同样的大头、脸、表情；有手臂和小肉掌手、腿和平放的脚、轻微对立式站姿（contrapposto）、身后的大尾巴；每种风格有小装饰（kawaii 柔色围巾、anime 红色领巾、plush 针织围巾、glass 发光项圈）。2D 和 3D 都支持，四种风格都有。
+- anthro 动作：呼吸 idle 带重心轻移和手臂摆动；`pet.play('wave')` 挥手；`pet.play('success')` 或 `'happy'` 双手叉腰；thinking/eating/working/sleep 双手收在身前。切换约 0.3–0.5 秒平滑过渡，`reducedMotion` 时直接切换。
+- 示例：`pet.setConfig({ appearance: { pose: 'anthro' } })`；playground 用 `?pose=anthro`（以及 `?action=wave`），简洁模式外观面板里有 坐 / 站 / 拟人 切换。
 - 3D 改进：圆润的奶油色口鼻 + 脸颊绒毛；anime 白色区域干净不发灰；happy 是 ^ ^ 眯眼，love 是爱心眼；尾巴尖过渡平滑；glass 有低成本的发光光晕，弱设备/低画质时关闭。
 
 ## Agent API
