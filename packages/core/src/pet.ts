@@ -8,7 +8,7 @@ import { ClipPlayer, DEFAULT_SOCKETS } from './animation'
 import { Emitter } from './events'
 import { chooseAutonomousAction, clamp, resolveBodyPose, resolveExpression, stepStats } from './motion'
 import { mergeConfig, parsePetConfig, serializePetConfig } from './schema'
-import { PetStateMachine } from './state-machine'
+import { PetStateMachine, type PlayOptions } from './state-machine'
 import type {
   AgentState,
   Emotion,
@@ -59,6 +59,7 @@ export class Pet {
   #secretMode: boolean
   #player = new ClipPlayer()
   #clipAction: PetAction | null = null
+  #sample: { action: PetAction; time: number } | null = null
 
   constructor(input?: unknown, options: PetOptions = {}) {
     const parsed = parsePetConfig(input ?? {})
@@ -148,12 +149,13 @@ export class Pet {
     return result.issues
   }
 
-  play(action: PetAction | string): boolean {
+  play(action: PetAction | string, options: PlayOptions = {}): boolean {
     if (!isPetAction(action)) throw new Error(`Unknown action "${action}"`)
     const now = this.#now()
     const previous = this.#machine.action
-    const accepted = this.#machine.play(action, now, { reason: 'user' })
+    const accepted = this.#machine.play(action, now, { ...options, reason: 'user' })
     if (!accepted) return false
+    this.#sample = Number.isFinite(options.sampleTime) ? { action, time: Math.max(0, options.sampleTime!) } : null
     this.#armClip(this.#machine.action)
     if (previous !== this.#machine.action) {
       this.#events.emit('action', { action: this.#machine.action, previous })
@@ -299,7 +301,9 @@ export class Pet {
     const emotion = this.#machine.emotion
     const reduced = this.#config.renderer.reducedMotion
     const speaking = Boolean(this.#speech)
+    const animationTime = this.#sample?.action === action ? this.#sample.time : undefined
     return {
+      animationTime,
       behavior: action,
       emotion,
       speaking,
@@ -323,11 +327,11 @@ export class Pet {
         action,
         emotion,
         speaking,
-        time: now,
+        time: animationTime ?? now,
         reducedMotion: reduced,
         dragActive: this.#drag.active,
       }),
-      pose: resolveBodyPose(action, now, reduced, this.#drag.active),
+      pose: resolveBodyPose(action, animationTime ?? now, reduced, this.#drag.active),
       name: this.#config.name,
       channels: this.#channels(action, now),
       sockets: this.#config.sockets?.length ? this.#config.sockets : DEFAULT_SOCKETS,

@@ -2,7 +2,7 @@
 import * as THREE from 'three'
 
 /** A closed, smooth pear/head surface, sculpted from a UV cage. */
-export function sculptedForm(kind: 'head' | 'anthro-head' | 'body' | 'limb' | 'foot', detail = 40): THREE.BufferGeometry {
+export function sculptedForm(kind: 'head' | 'anthro-head' | 'body' | 'limb' | 'foot', detail = 40, fluffy = false): THREE.BufferGeometry {
   const geometry = new THREE.SphereGeometry(1, detail, Math.round(detail * 0.75))
   const p = geometry.getAttribute('position')
   for (let i = 0; i < p.count; i++) {
@@ -21,7 +21,11 @@ export function sculptedForm(kind: 'head' | 'anthro-head' | 'body' | 'limb' | 'f
           0.10 * Math.exp(-(((py + 0.32) / 0.020) ** 2))) *
         Math.abs(x) ** 4
       const puffs = kind === 'anthro-head' ? (0.085 * Math.exp(-(((py + 0.11) / 0.045) ** 2)) + 0.080 * Math.exp(-(((py + 0.22) / 0.045) ** 2))) * Math.abs(x) ** 6 : fluff
-      p.setXYZ(i, px + Math.sign(x) * puffs, py, z * (0.405 + cheek * 0.018) + muzzle)
+      // Broad overlapping lobes read as wool puffs instead of sharp horizontal points.
+      const feltPuffs = (0.095 * Math.exp(-(((py + 0.075) / 0.075) ** 2)) +
+        0.12 * Math.exp(-(((py + 0.195) / 0.075) ** 2)) +
+        0.07 * Math.exp(-(((py + 0.305) / 0.065) ** 2))) * Math.abs(x) ** 5
+      p.setXYZ(i, px + Math.sign(x) * (fluffy ? feltPuffs : puffs), py, z * (0.405 + cheek * 0.018) + muzzle)
     } else if (kind === 'body') {
       const pear = 1 - y * 0.23
       p.setXYZ(i, x * 0.355 * pear, y * 0.48, z * 0.3 * pear)

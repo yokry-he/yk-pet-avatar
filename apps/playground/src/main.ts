@@ -60,9 +60,13 @@ if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setCo
 const poseParam = query.get('pose')
 if ((POSES as readonly string[]).includes(poseParam ?? '')) pet.setConfig({ appearance: { pose: poseParam as PetPose } })
 const actionParam = query.get('action')
-if (actionParam) window.setTimeout(() => pet.play(actionParam), 900)
+if (actionParam) {
+  pet.setConfig({ behavior: { autonomous: false } })
+  const hold = query.get('hold') === '1'
+  pet.play(actionParam, hold ? { hold: true, sampleTime: 0.6 } : {})
+}
 const emotionParam = query.get('emotion')
-if (emotionParam) window.setTimeout(() => pet.setEmotion(emotionParam), 300)
+if (emotionParam) pet.setEmotion(emotionParam)
 applyTheme()
 bind()
 refresh()

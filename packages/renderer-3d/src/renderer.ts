@@ -166,7 +166,8 @@ export class ThreePetRenderer implements PetRenderer {
   start(): void {
     if (this.#frame || typeof requestAnimationFrame !== 'function') return
     const loop = (now: number) => {
-      const dt = this.#last ? Math.min(0.05, (now - this.#last) / 1000) : 0
+      // Procedural gestures share the core action clock, even on slow GPU frames.
+      const dt = this.#last ? Math.max(0, (now - this.#last) / 1000) : 0
       this.#last = now
       this.#elapsed += dt
       this.options.onFrame?.(dt)
@@ -174,10 +175,14 @@ export class ThreePetRenderer implements PetRenderer {
       if (next) this.#state = next
       this.#ensurePet(this.#state, false)
       this.#root.rotation.y = this.options.getYaw?.() ?? 0
-      this.#pet?.update(this.#state, this.#elapsed)
-      this.#syncModel(dt)
+      this.#pet?.update(this.#state, this.#state.animationTime ?? this.#elapsed)
+      this.#syncModel(Math.min(0.05, dt))
       this.#fitCamera()
       this.#renderer?.render(this.#scene, this.#camera)
+      if (this.canvas) {
+        this.canvas.dataset.action = this.#state.behavior
+        this.canvas.dataset.animationTime = String(this.#state.animationTime ?? '')
+      }
       this.#watchFps(now)
       this.#frame = requestAnimationFrame(loop)
     }
@@ -199,7 +204,7 @@ export class ThreePetRenderer implements PetRenderer {
   update(state: PetVisualState): void {
     this.#state = state
     this.#ensurePet(state, false)
-    this.#pet?.update(state, this.#elapsed)
+    this.#pet?.update(state, state.animationTime ?? this.#elapsed)
     this.#fitCamera()
     if (!this.#frame) this.#renderer?.render(this.#scene, this.#camera)
   }
@@ -282,7 +287,7 @@ export class ThreePetRenderer implements PetRenderer {
     this.#lights.clear()
     const style = getStyle(state.style)
     this.#lightPose = state.appearance?.pose ?? 'sit'
-    const soft = this.#lightPose === 'anthro' && style.id === 'plush'
+    const soft = style.id === 'plush'
     this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * (soft ? 1.15 : 0.34)))
     const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * (soft ? 0.85 : 1.35))
     key.position.set(-3.0, 4.5, 4.0)

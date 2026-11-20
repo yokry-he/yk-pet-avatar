@@ -9,6 +9,7 @@ import {
   type AgentState,
   type Emotion,
   type PetAction,
+  type PlayOptions,
   type PetConfig,
   type PetEventMap,
   type PetRenderer,
@@ -116,7 +117,7 @@ export class YkPetElement extends HTMLElement {
   }
 
   say(text: string, opts?: SayOptions): SpeechHandle { return this.pet.say(text, opts) }
-  play(action: PetAction | string): boolean { return this.pet.play(action) }
+  play(action: PetAction | string, options?: PlayOptions): boolean { return this.pet.play(action, options) }
   setEmotion(emotion: Emotion | string): void { this.pet.setEmotion(emotion) }
   lookAt(x: number, y: number): void { this.pet.lookAt(x, y) }
   setState(state: AgentState | string): boolean { return this.pet.setState(state) }

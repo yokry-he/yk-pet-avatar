@@ -278,6 +278,8 @@ export interface DragVisual {
  * the yk-pets visual state; everything else rides along in the same object.
  */
 export interface PetVisualState {
+  /** Fixed procedural sample time for a deterministic preview; transitions snap to target. */
+  animationTime?: number
   behavior: string
   emotion?: string
   speaking?: boolean

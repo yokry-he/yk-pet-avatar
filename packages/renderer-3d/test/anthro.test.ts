@@ -306,3 +306,28 @@ describe('styled anthro integration', () => {
     } finally { vi.unstubAllGlobals() }
   })
 })
+
+describe('deterministic procedural samples', () => {
+  it('renders a held gesture immediately and keeps it fixed across slow frames for every style', () => {
+    for (const style of ['kawaii', 'anime', 'plush', 'glass'] as const) {
+      const next = { ...state(style), reducedMotion: false, animationTime: 0.6 }
+      const pet = createProceduralPet(next, 'low')
+      for (const action of ['wave', 'success'] as const) {
+        const sample = { ...next, behavior: action }
+        pet.update(sample, 10)
+        pet.group.updateMatrixWorld(true)
+        const hands = ['l', 'r'].map(side => pet.group.getObjectByName(`anthro-hand-${side}`)!.getWorldPosition(new THREE.Vector3()))
+        pet.update(sample, 100)
+        pet.group.updateMatrixWorld(true)
+        hands.forEach((position, i) => {
+          expect(pet.group.getObjectByName(`anthro-hand-${i === 0 ? 'l' : 'r'}`)!.getWorldPosition(new THREE.Vector3())).toEqual(position)
+          if (action === 'success' || i === 0) {
+            const shoulder = pet.group.getObjectByName(`anthro-shoulder-${i === 0 ? 'l' : 'r'}`)!
+            expect(position.y).toBeGreaterThan(shoulder.getWorldPosition(new THREE.Vector3()).y)
+          }
+        })
+      }
+      pet.dispose()
+    }
+  })
+})

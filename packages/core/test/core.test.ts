@@ -279,3 +279,22 @@ describe('clip tracks and sockets', () => {
     expect(pet.playSequence('missing')).toBe(false)
   })
 })
+
+describe('held action previews', () => {
+  it('holds a fixed procedural sample beyond expiry and clears it on the next action', () => {
+    let now = 0
+    const pet = new Pet({ behavior: { autonomous: true } }, { now: () => now })
+    expect(pet.play('wave', { hold: true, sampleTime: 0.6 })).toBe(true)
+    const sample = pet.getVisualState()
+    now = 30
+    pet.tick()
+    expect(pet.action).toBe('wave')
+    expect(pet.getVisualState().animationTime).toBe(0.6)
+    expect(pet.getVisualState().pose).toEqual(sample.pose)
+    expect(pet.play('success')).toBe(true)
+    expect(pet.getVisualState().animationTime).toBeUndefined()
+    now = 31
+    pet.tick()
+    expect(pet.action).toBe('success')
+  })
+})
