@@ -20,6 +20,8 @@ import {
 } from '@yk-pet/core'
 import * as THREE from 'three'
 import { advancePose, initialPose, interpolateRig } from './pose'
+import { advanceGesture, anthroPose, initialGesture } from './anthro'
+import { createAnthroRig } from './anthro-rig'
 import { earSurface, pillowSurface, sculptedForm, sweptTail } from './sculpt'
 
 type PetMaterial = THREE.MeshStandardMaterial | THREE.MeshToonMaterial | THREE.MeshBasicMaterial
@@ -30,6 +32,7 @@ interface Tint {
 export interface ProceduralPet {
   group: THREE.Group
   readonly poseBlend: number
+  readonly anthroBlend: number
   update(state: PetVisualState, time: number): void
   dispose(): void
 }
@@ -411,6 +414,33 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     }
     return bone
   })
+  let anthro: ReturnType<typeof createAnthroRig> | undefined
+  const ensureAnthro = () => {
+    if (anthro) return anthro
+    const anthroBodyMat = mat('body')
+    const clothMat = mat('accent')
+    clothMat.side = THREE.DoubleSide
+    clothMat.userData.fixedColor = style.id === 'anime' ? '#df4322'
+      : style.id === 'plush' ? '#86aaa5' : style.id === 'glass' ? '#9bfff1' : '#a1d8cc'
+    if (clothMat instanceof THREE.MeshPhysicalMaterial && style.id === 'glass') {
+      clothMat.transmission = 0
+      clothMat.emissive.set('#77ffe9')
+      clothMat.emissiveIntensity = 0.7
+    }
+    anthro = createAnthroRig(add, anthroBodyMat, mat('body'), creamMat, beanMat, clothMat, ink, style.id, tier === 'low' ? 24 : 40)
+    hips.add(anthro.group)
+    anthro.torsoMesh.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+      for (const m of list)
+        if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
+          paintMarkings(m, faceBody, faceCream, 'chest', faceBlush, blushStrength)
+    })
+    // An explicitly configured scarf replaces the small style outfit hint.
+    anthro.collar.visible = !(state.appearance?.accessories ?? []).some((item) =>
+      item.kind === 'scarf' && socketForAccessory(item.kind, item.socket).id === 'neck')
+    return anthro
+  }
   const tail = new THREE.Group()
   tail.name = 'bone-tail'
   tail.position.set(0.29, 0.24, -0.2)
@@ -502,14 +532,20 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   }
 
   let disposed = false
-  let transition = initialPose(state.appearance?.pose)
+  let transition = initialPose(state.appearance?.pose === 'anthro' ? 'stand' : state.appearance?.pose)
+  let anthroTransition = initialPose(state.appearance?.pose === 'anthro' ? 'stand' : 'sit')
+  let gesture = initialGesture((state.behavior || 'idle') as PetAction)
   let lastTime = 0
   const pet: ProceduralPet = {
     group,
     get poseBlend() {
       return transition.value
     },
+    get anthroBlend() {
+      return anthroTransition.value
+    },
     update(next, time) {
+      if (next.appearance?.pose === 'anthro') ensureAnthro()
       const colors = gradeColors(next.appearance?.colors ?? APRICOT_COLORS, {
         ...style.grade,
         lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' ? 0.015 : -0.045,
@@ -526,6 +562,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
               : tint.slot === 'belly' || tint.slot === 'accent'
                 ? '#b5eaff'
                 : '#8abfff'
+        color = tint.material.userData.fixedColor ?? color
         tint.material.color.set(tint.material.userData.faceMask ? '#ffffff' : color)
         if (tint.slot === 'outline' && tint.material.userData.grow)
           tint.material.userData.grow.value = 0.007 * (next.finish?.outlineWidth ?? 1)
@@ -558,7 +595,10 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         reducedMotion: reduced,
         dragActive: drag,
       })
-      transition = advancePose(transition, next.appearance?.pose, time - lastTime, reduced)
+      const dt = time - lastTime
+      transition = advancePose(transition, next.appearance?.pose === 'anthro' ? 'stand' : next.appearance?.pose, dt, reduced)
+      anthroTransition = advancePose(anthroTransition, next.appearance?.pose === 'anthro' ? 'stand' : 'sit', dt, reduced)
+      gesture = advanceGesture(gesture, action, dt, reduced)
       lastTime = time
       const rig = interpolateRig(transition.value)
       const t = reduced ? 0 : time
@@ -691,6 +731,56 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         paw.rotation.z +=
           channelValue(next.channels, i === 0 ? 'bone-paw-l' : 'bone-paw-r', 'rotation.z') ?? 0
       })
+      const a = anthroTransition.value, humanoid = a >= 0.5
+      if (anthro) anthro.group.visible = humanoid
+      chest.visible = !humanoid
+      paws.forEach((paw) => { paw.visible = !humanoid })
+      hindFeet.forEach((foot) => { foot.visible = !humanoid })
+      hindLegs.forEach((leg) => { leg.visible = !humanoid && rig.legScale > 0 })
+      // A short squash hides the anatomy swap; ordinary sit/stand interpolation is unchanged.
+      hips.scale.y = 1 - Math.sin(Math.PI * a) * 0.84
+      if (a > 0) {
+        const anthroRig = ensureAnthro()
+        const bodyScale = props.bodyScale, heightScale = props.bodyScale * props.bodyLength
+        const humanoidPose = anthroPose(time, gesture.value, reduced, props.headScale / bodyScale)
+        anthroRig.update(humanoidPose, gesture.value[0] ?? 0)
+        anthroRig.group.scale.set(bodyScale, heightScale, bodyScale)
+        head.position.y = THREE.MathUtils.lerp(head.position.y, (1.60 + humanoidPose.breath) * heightScale + 0.46 * props.headScale, a)
+        head.position.x = humanoidPose.shift * bodyScale * a
+        head.rotation.z += 0.025 * a
+        hips.position.y *= 1 - a
+        hips.rotation.x *= 1 - a
+        tail.position.y = THREE.MathUtils.lerp(rig.tailY, 0.78 * heightScale, a)
+        tail.position.z = THREE.MathUtils.lerp(rig.tailZ, -0.25 * bodyScale, a)
+        tail.rotation.z += -0.10 * a
+        // Configured accessories keep their sockets on the new anatomy.
+        if (humanoid) {
+          accessories.position.y = 0
+          for (const item of accessories.children) {
+            const id = item.userData.socket as string
+            const side = id.endsWith('-l') ? 0 : 1
+            if (id === 'paw-l' || id === 'paw-r') {
+              const wrist = humanoidPose.arms[side]!.end
+              item.position.set(wrist[0] * bodyScale, wrist[1] * heightScale - 0.06, wrist[2] * bodyScale + 0.10)
+            } else if (id === 'head' || id === 'ear-l' || id === 'ear-r' || id === 'face' || id === 'muzzle') {
+              const base = item.userData.socketBase as THREE.Vector3
+              item.position.set(base.x * props.headScale + head.position.x,
+                head.position.y + (id === 'head' ? 0.62 : id.startsWith('ear-') ? 0.5 : id === 'face' ? 0.05 : -0.15) * props.headScale,
+                id === 'face' || id === 'muzzle' ? 0.58 * props.headScale : base.z)
+            } else {
+              const base = item.userData.socketBase as THREE.Vector3
+              item.position.set((id === 'neck' && anthroRig.collar.visible ? base.x + 0.22 : base.x) * bodyScale, (id === 'neck' ? 1.57 : id === 'tail' ? 0.80 : 1.27) * heightScale,
+                id === 'neck' ? 0.14 * bodyScale : base.z * bodyScale)
+            }
+          }
+        }
+        for (const [i, arm] of anthroRig.arms.entries())
+          arm.root.rotation.z += channelValue(next.channels, i === 0 ? 'bone-paw-l' : 'bone-paw-r', 'rotation.z') ?? 0
+      } else head.position.x = 0
+      if (!humanoid) for (const item of accessories.children) {
+        const base = item.userData.socketBase as THREE.Vector3
+        item.position.copy(base)
+      }
     },
     dispose() {
       if (disposed) return
@@ -857,6 +947,8 @@ function buildAccessories(
     const holder = new THREE.Group()
     holder.name = `socket-${socket.id}`
     holder.position.set(socket.position.x, socket.position.y - 0.08, socket.position.z)
+    holder.userData.socket = socket.id
+    holder.userData.socketBase = holder.position.clone()
     parent.add(holder)
     const color = new THREE.Color(item.color ?? '#8ed9cc')
     const mat =
@@ -914,6 +1006,8 @@ function buildAccessories(
     )
     bead.name = `prop-${prop.id}`
     bead.position.set(socket.position.x, socket.position.y - 0.08, socket.position.z + 0.05)
+    bead.userData.socket = socket.id
+    bead.userData.socketBase = bead.position.clone()
     parent.add(bead)
   }
 }
@@ -996,6 +1090,7 @@ function surfaceFinish(
         opacity: 0.65 * (1 - i / (layers + 1)),
         depthWrite: false,
       })
+      m.userData.fixedColor = original.userData.fixedColor
       inflate(m, style.material.furLength * (i / layers) * 0.8)
       materials.add(m)
       tints.push({ material: m, slot: tint?.slot ?? 'body' })

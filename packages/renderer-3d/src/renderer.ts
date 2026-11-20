@@ -421,6 +421,7 @@ export class ThreePetRenderer implements PetRenderer {
       this.#state.appearance?.proportions,
       Boolean(this.#model),
       this.#pet?.poseBlend,
+      this.#pet?.anthroBlend,
     ])
     if (signature === this.#framing) return
     this.#framing = signature
@@ -430,7 +431,12 @@ export class ThreePetRenderer implements PetRenderer {
     const yaw = this.#root.rotation.y
     this.#root.rotation.y = 0
     object.updateWorldMatrix(true, true)
+    // Keep the camera's fit independent of the brief squash used to swap anatomy.
+    const pelvis = this.#pet?.group.getObjectByName('bone-hips')
+    const squash = pelvis?.scale.y ?? 1
+    if (pelvis) pelvis.scale.y = 1
     const box = visualBounds(object)
+    if (pelvis) pelvis.scale.y = squash
     this.#root.rotation.y = yaw
     this.#root.updateMatrixWorld(true)
     if (box.isEmpty()) return
