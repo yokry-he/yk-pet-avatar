@@ -109,6 +109,7 @@ export class ThreePetRenderer implements PetRenderer {
   #loadingUrl = ''
   #loadVersion = 0
   #environment: THREE.WebGLRenderTarget | null = null
+  #lightPose = ''
   #framing = ''
 
   constructor(private readonly options: ThreeRendererOptions = {}) {
@@ -254,6 +255,7 @@ export class ThreePetRenderer implements PetRenderer {
       model: state.model?.url ?? '',
       props: state.props ?? [],
     })
+    if (this.#lightPose !== (state.appearance?.pose ?? 'sit')) this.#applyLights(state)
     if (!force && signature === this.#signature) return
     this.#signature = signature
     this.#pet?.dispose()
@@ -279,10 +281,12 @@ export class ThreePetRenderer implements PetRenderer {
     })
     this.#lights.clear()
     const style = getStyle(state.style)
-    this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * 0.34))
-    const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * 1.35)
+    this.#lightPose = state.appearance?.pose ?? 'sit'
+    const soft = this.#lightPose === 'anthro' && style.id === 'plush'
+    this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * (soft ? 1.15 : 0.34)))
+    const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * (soft ? 0.85 : 1.35))
     key.position.set(-3.0, 4.5, 4.0)
-    const fill = new THREE.DirectionalLight(style.lights.fill, style.lights.fillIntensity * 0.45)
+    const fill = new THREE.DirectionalLight(style.lights.fill, style.lights.fillIntensity * (soft ? 1.2 : 0.45))
     fill.position.set(3.0, 1.8, 2.4)
     const rim = new THREE.DirectionalLight(style.lights.rim, style.lights.rimIntensity)
     rim.position.set(1.5, 3.0, -2.2)

@@ -3,11 +3,11 @@ import type { PetAction } from '@yk-pet/core'
 
 export type Point = readonly [number, number, number]
 export interface Chain { root: Point; joint: Point; end: Point }
-export const ARM_LENGTHS = [0.27, 0.245] as const
-export const LEG_LENGTHS = [0.25, 0.25] as const
+export const ARM_LENGTHS = [0.205, 0.195] as const
+export const LEG_LENGTHS = [0.105, 0.105] as const
 export const GESTURE_DURATION = 0.25
 // Anthro-only landmarks, measured from the planted sole; sit/stand keep their own rig.
-export const ANTHRO = { torsoY: 0.94, neckY: 1.28, shoulderY: 1.16, hipY: 0.64, ankleY: 0.155, footX: 0.22, tailY: 0.54 } as const
+export const ANTHRO = { torsoY: 0.82, neckY: 1.16, shoulderY: 1.20, hipY: 0.33, ankleY: 0.155, footX: 0.22, tailY: 0.30 } as const
 const clamp = (n: number, min = 0, max = 1) => Math.max(min, Math.min(max, n))
 const add = (a: Point, b: Point): Point => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 const sub = (a: Point, b: Point): Point => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -19,7 +19,7 @@ const mix = (a: Point, b: Point, t: number): Point => add(a, mul(sub(b, a), t))
 
 /** Normalize the style defaults; the caller applies this gain before the user's own proportions. */
 export function anthroHeadGain(styleHead: number, styleBody: number): number {
-  return clamp(styleHead * 1.12, styleBody * 1.12, styleBody * 1.36) / styleHead
+  return clamp(styleHead * 1.3, styleBody * 1.42, styleBody * 1.48) / styleHead
 }
 
 /** Pole is a direction toward the elbow/knee. Clamp unreachable targets without stretching bones. */
@@ -73,26 +73,27 @@ export function anthroPose(time: number, gesture: readonly number[], reduced = f
   const hipRoll = -0.025, shoulderRoll = 0.025
   const breath = reduced ? 0 : Math.sin(t * 2) * 0.006
   const arms = [-1, 1].map((side) => {
-    const greeting = side === 1 ? wave : 0
+    const greeting = side === -1 ? wave : 0
     const celebration = celebrate * (1 - greeting)
     const raised = greeting + celebration
     const hips = proud * (1 - raised)
     const gathered = gather * (1 - raised) * (1 - hips)
-    // The root overlaps the torso even at full reach. Only the sleeve length changes.
-    const root: Point = [side * 0.30 + shift, ANTHRO.shoulderY + side * 0.008 + breath, 0]
-    const idle: Point = [side * 0.425 + shift, 0.755 + breath, 0.14 + Math.sin(t * 1.5 + side) * (reduced ? 0 : 0.018)]
-    let wrist = mix(idle, [side * 0.40 + shift, 0.84 + breath, 0.16], hips)
-    wrist = mix(wrist, [side * 0.13 + shift, 1.01 + breath, 0.30], gathered)
-    const arc = reduced ? 0 : Math.sin(t * 7.5) * 0.32
-    const reach = 1 + (2.9 * Math.max(1, headToBody / 1.2) - 1) * raised + hips * 0.5
+    const root: Point = [side * 0.43 + shift, ANTHRO.shoulderY + side * 0.008 + breath, 0.16]
+    const idle: Point = [side * 0.58 + shift, 0.83 + breath, 0.19]
+    let wrist = mix(idle, [side * 0.51 + shift, 0.86 + breath, 0.24], hips)
+    wrist = mix(wrist, [side * 0.17 + shift, 1.15 + breath, 0.40], gathered)
+    const arc = reduced ? 0 : Math.sin(t * 7.5) * 0.10
+    // Beside the lower cheek, in front of the fur. Only a small cartoon reach is needed.
+    const ratio = Math.max(1, headToBody / 1.42)
+    const greetingHand: Point = [side * (0.66 + arc * 0.30) * ratio + shift, 1.40 + breath + arc * 0.08, 0.64 * ratio]
+    const successHand: Point = [side * 0.99 * ratio + shift, 1.93 * ratio + breath, 0.30]
+    wrist = mix(wrist, greetingHand, greeting)
+    wrist = mix(wrist, successHand, celebration)
+    const reach = Math.max(1 + hips * 0.23, length(sub(wrist, root)) / (ARM_LENGTHS[0] + ARM_LENGTHS[1]) + 0.015)
     const lengths = ARM_LENGTHS.map(n => n * reach) as [number, number]
-    const upper = 2.30 + greeting * 0.05, lower = 2.78 + greeting * (0.24 + arc)
-    const elbow: Point = [root[0] + side * Math.sin(upper) * lengths[0], root[1] - Math.cos(upper) * lengths[0], 0.08]
-    const high: Point = [elbow[0] + side * Math.sin(lower) * lengths[1], elbow[1] - Math.cos(lower) * lengths[1], 0.08]
-    wrist = mix(wrist, high, raised)
     return {
-      ...solveLimb(root, wrist, mix([side * 0.24, -0.12, 0.65], [side, 0.05, -0.12], Math.max(hips, raised)), ...lengths),
-      handRoll: side * (greeting * (3.02 + arc) + celebration * (Math.PI - 0.36) - hips * 0.75),
+      ...solveLimb(root, wrist, mix([side * 0.5, -0.1, 0.1], [side, -0.4, -0.1], Math.max(hips, raised)), ...lengths),
+      handRoll: side * (greeting * (2.9 + arc) + celebration * 2.8 - hips * 0.65),
       handPitch: -hips * 0.32,
       palm: raised,
     }

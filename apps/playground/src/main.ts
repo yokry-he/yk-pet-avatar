@@ -2,6 +2,7 @@ import './editor.css'
 import {
   ACTION_CATALOG,
   PRESET_COLORS,
+  presetConfig,
   POSES,
   type PetPose,
   SPECIES_PART_DEFAULTS,
@@ -49,6 +50,11 @@ app.innerHTML = shell()
 const pet = app.querySelector('yk-pet') as YkPetElement
 pet.preference = (query.get('renderer') as RendererPreference) || '2d'
 pet.config = { behavior: { autonomous: true } }
+const paletteParam = query.get('palette')
+if (paletteParam && Object.hasOwn(PRESET_COLORS, paletteParam)) {
+  const preset = presetConfig(paletteParam)
+  pet.setConfig({ species: preset.species, appearance: { colors: preset.appearance.colors, parts: preset.appearance.parts } })
+}
 const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
 const poseParam = query.get('pose')
