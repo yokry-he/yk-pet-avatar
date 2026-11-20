@@ -3,7 +3,7 @@ import { POSES, parsePetConfig, defaultConfig, mergeConfig, serializePetConfig }
 
 describe('appearance.pose', () => {
   it('exposes the supported poses', () => {
-    expect(POSES).toEqual(['sit', 'stand'])
+    expect(POSES).toEqual(['sit', 'stand', 'anthro'])
   })
 
   it('parses config without pose as undefined and without a pose issue', () => {

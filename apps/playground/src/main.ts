@@ -3,6 +3,7 @@ import {
   ACTION_CATALOG,
   PRESET_COLORS,
   POSES,
+  type PetPose,
   SPECIES_PART_DEFAULTS,
   listStyles,
   type Emotion,
@@ -51,7 +52,9 @@ pet.config = { behavior: { autonomous: true } }
 const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
 const poseParam = query.get('pose')
-if (poseParam === 'sit' || poseParam === 'stand') pet.setConfig({ appearance: { pose: poseParam } })
+if ((POSES as readonly string[]).includes(poseParam ?? '')) pet.setConfig({ appearance: { pose: poseParam as PetPose } })
+const actionParam = query.get('action')
+if (actionParam) window.setTimeout(() => pet.play(actionParam), 900)
 const emotionParam = query.get('emotion')
 if (emotionParam) window.setTimeout(() => pet.setEmotion(emotionParam), 300)
 applyTheme()
@@ -351,7 +354,7 @@ function poseControl(config: PetConfig): string {
 
 function bindPoseControl(host: HTMLElement): void {
   host.querySelectorAll<HTMLButtonElement>('[data-pose]').forEach(button => button.addEventListener('click', () => {
-    const pose = button.dataset.pose === 'stand' ? 'stand' : 'sit'
+    const pose = (POSES as readonly string[]).includes(button.dataset.pose ?? '') ? button.dataset.pose as PetPose : 'sit'
     pet.setConfig({ appearance: { pose } })
     refresh()
   }))
