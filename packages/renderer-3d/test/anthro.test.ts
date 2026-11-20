@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
-import { APRICOT_COLORS, DEFAULT_PROPORTIONS, SPECIES_PART_DEFAULTS, type PetVisualState } from '@yk-pet/core'
+import { APRICOT_COLORS, PRESET_COLORS, DEFAULT_PROPORTIONS, SPECIES_PART_DEFAULTS, type PetVisualState } from '@yk-pet/core'
 import { ANTHRO, advanceGesture, anthroHeadGain, anthroPose, ARM_LENGTHS, GESTURE_DURATION, initialGesture, LEG_LENGTHS, solveLimb, type Point } from '../src/anthro'
 import { anthroForm, limbSleeve, visualBounds } from '../src/sculpt'
 import { createProceduralPet } from '../src/procedural'
@@ -250,6 +250,50 @@ describe('styled anthro integration', () => {
     pet.update({ ...next, behavior: 'wave' }, 1)
     expect(pet.group.getObjectByName('socket-paw-l')!.position.y).toBeGreaterThan(ANTHRO.shoulderY)
     pet.dispose()
+  })
+  it('keeps the neutral greeting open-eyed and uses lavender on ears, pads and tail', () => {
+    const next = state('plush')
+    next.appearance!.colors = PRESET_COLORS.lavender!.colors
+    const pet = createProceduralPet({ ...next, behavior: 'wave' }, 'low')
+    expect(pet.group.getObjectByName('eye-open')!.visible).toBe(true)
+    expect(pet.group.getObjectByName('anthro-chest-emblem')!.visible).toBe(true)
+    const pad = pet.group.getObjectByName('mesh-anthro-palm') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
+    const inner = pet.group.getObjectByName('mesh-inner-ear') as typeof pad
+    expect(pad.material.color.getHex()).toBe(inner.material.color.getHex())
+    expect(pad.material.color.b).toBeGreaterThan(pad.material.color.g)
+    expect(pet.group.getObjectByName('mesh-anthro-arm')!.getObjectByName('fur-shell-1')).toBeDefined()
+    expect(pet.group.getObjectByName('mesh-anthro-arm')!.getObjectByName('fur-shell-2')).toBeUndefined()
+    pet.dispose()
+  })
+  it('restores legacy surfaces and disposes both cached anatomies exactly once', () => {
+    const next = state('plush')
+    const sit = { ...next, appearance: { ...next.appearance!, pose: 'sit' as const } }
+    const pet = createProceduralPet(sit, 'low')
+    const head = pet.group.getObjectByName('mesh-head') as THREE.Mesh
+    const tail = pet.group.getObjectByName('mesh-tail') as THREE.Mesh
+    const oldHead = head.geometry, oldTail = tail.geometry
+    const oldBounds = visualBounds(pet.group).clone()
+    pet.update(next, 1)
+    const newHead = head.geometry, newTail = tail.geometry
+    expect(newHead).not.toBe(oldHead)
+    expect(newTail).not.toBe(oldTail)
+    pet.update(sit, 2)
+    expect(head.geometry).toBe(oldHead)
+    expect(tail.geometry).toBe(oldTail)
+    expect(visualBounds(pet.group)).toEqual(oldBounds)
+    const resources = new Set<THREE.BufferGeometry | THREE.Material | THREE.Texture>([newHead, newTail, oldHead, oldTail])
+    pet.group.traverse(node => {
+      if (!(node instanceof THREE.Mesh)) return
+      resources.add(node.geometry)
+      for (const m of Array.isArray(node.material) ? node.material : [node.material]) {
+        resources.add(m)
+        for (const value of Object.values(m)) if (value instanceof THREE.Texture) resources.add(value)
+      }
+    })
+    const spies = [...resources].map(resource => vi.spyOn(resource, 'dispose'))
+    pet.dispose()
+    pet.dispose()
+    spies.forEach(spy => expect(spy).toHaveBeenCalledTimes(1))
   })
   it('drops expensive glass layers on weak devices for the new limbs too', () => {
     vi.stubGlobal('navigator', { hardwareConcurrency: 2, deviceMemory: 2 })

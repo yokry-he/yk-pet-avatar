@@ -622,6 +622,10 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         reducedMotion: reduced,
         dragActive: drag,
       })
+      if (next.appearance?.pose === 'anthro' && action === 'wave' && (!next.emotion || next.emotion === 'neutral')) {
+        expression.smile = 0.3
+        expression.mouthOpen = 0
+      }
       const dt = time - lastTime
       transition = advancePose(transition, next.appearance?.pose === 'anthro' ? 'stand' : next.appearance?.pose, dt, reduced)
       anthroTransition = advancePose(anthroTransition, next.appearance?.pose === 'anthro' ? 'stand' : 'sit', dt, reduced)
