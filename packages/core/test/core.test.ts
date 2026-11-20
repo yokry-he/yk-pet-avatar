@@ -17,6 +17,8 @@ import {
   gradeHex,
   listStyles,
   parsePetConfig,
+  presetConfig,
+  PRESET_COLORS,
   resolveExpression,
   resolveQualityTier,
   resolveBodyPose,
@@ -25,6 +27,14 @@ import {
 } from '../src/index'
 
 describe('config schema', () => {
+  it('reproduces the cream/lavender reference palette without default neckwear', () => {
+    const config = presetConfig('lavender')
+    expect(config.species).toBe('fox')
+    expect(config.appearance.colors).toEqual(PRESET_COLORS.lavender!.colors)
+    expect(config.appearance.accessories).toEqual([])
+    config.appearance.colors.body = '#000000'
+    expect(PRESET_COLORS.lavender!.colors.body).toBe('#f7efdf')
+  })
   it('fills a kawaii default', () => {
     const { config, issues } = parsePetConfig({})
     expect(config.schemaVersion).toBe(1)

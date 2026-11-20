@@ -59,33 +59,44 @@ export function transitionGesture(previous: GestureTransition | undefined, actio
 export interface Point { x: number; y: number }
 export interface ArmRig { shoulder: Point; elbow: Point; wrist: Point; handAngle: number; palm: number }
 
-/** Raised gestures use cartoon reach to clear the chibi head; the shoulder stays fixed. */
+/** Normalize only the style defaults; user proportions remain multiplicative. */
+export function anthroHeadGain(styleHead: number, styleBody: number): number {
+  return Math.max(styleBody * 1.42, Math.min(styleBody * 1.48, styleHead * 1.3)) / styleHead
+}
+
+/** Two short links with a fixed shoulder, outward elbow and cheek-side greeting. */
 export function armRig(side: number, time: number, weights: GestureWeights, reducedMotion = false,
-  headToBody = 1): ArmRig {
+  headToBody = 1.42): ArmRig {
   const t = reducedMotion ? 0 : time
-  const wave = side > 0 ? clamp(weights.wave) : 0
+  const wave = side < 0 ? clamp(weights.wave) : 0
   const celebrate = clamp(weights.celebrate) * (1 - wave)
   const raised = wave + celebrate
   const proud = clamp(weights.proud) * (1 - raised)
   const gather = clamp(weights.gather) * (1 - raised) * (1 - proud)
-  const sway = reducedMotion ? 0 : Math.sin(t * 1.85 + side * 0.5) * 0.035
-  const arc = reducedMotion ? 0 : Math.sin(t * 7.5) * 0.32
-  let upper = 0.16 + sway
-  let lower = -0.10 + sway * 0.5
-  upper = lerp(upper, 1.55, proud)
-  lower = lerp(lower, -0.75, proud)
-  upper = lerp(upper, 0.30, gather)
-  lower = lerp(lower, -2.35, gather)
-  upper = lerp(upper, 2.30, celebrate)
-  lower = lerp(lower, 2.78, celebrate)
-  upper = lerp(upper, 2.35, wave)
-  lower = lerp(lower, 3.02 + arc, wave)
-  const reach = lerp(1, Math.max(2.75, 2.5 * headToBody), raised) + proud * 0.5
-  const shoulder = { x: side * 28, y: -17 - side * 1.2 }
-  const elbow = { x: shoulder.x + side * Math.sin(upper) * 27 * reach, y: shoulder.y + Math.cos(upper) * 27 * reach }
-  const wrist = { x: elbow.x + side * Math.sin(lower) * 25 * reach, y: elbow.y + Math.cos(lower) * 25 * reach }
-  return { shoulder, elbow, wrist,
-    handAngle: lerp(-side * lower, -side * (Math.PI - 0.36), celebrate), palm: raised }
+  const arc = reducedMotion ? 0 : Math.sin(t * 7.5) * 0.10
+  const sway = reducedMotion ? 0 : Math.sin(t * 1.85 + side * 0.5) * 0.8
+  const shoulder = { x: side * 40, y: -15 - side * 0.7 }
+  let x = side * 53, y = 20 + sway
+  x = lerp(x, side * 47, proud); y = lerp(y, 29, proud)
+  x = lerp(x, side * 16, gather); y = lerp(y, -1, gather)
+  const ratio = Math.max(1, headToBody / 1.42)
+  x = lerp(x, side * (65 + arc * 30) * ratio, wave); y = lerp(y, -16 + arc * 8, wave)
+  x = lerp(x, side * 94 * ratio, celebrate); y = lerp(y, -87 * ratio, celebrate)
+  const dx = x - shoulder.x, dy = y - shoulder.y
+  const distance = Math.hypot(dx, dy)
+  const reach = Math.max(1 + proud * 0.6, distance / 40 + 0.015)
+  const upper = 20.5 * reach, lower = 19.5 * reach
+  const d = Math.max(0.001, distance)
+  const along = (upper * upper - lower * lower + d * d) / (2 * d)
+  const bend = Math.sqrt(Math.max(0, upper * upper - along * along))
+  const nx = dx / d, ny = dy / d
+  // Keep the same bend branch across shoulder height so gesture blends cannot flip elbows.
+  const direction = -side
+  const elbow = { x: shoulder.x + nx * along - ny * bend * direction,
+    y: shoulder.y + ny * along + nx * bend * direction }
+  return { shoulder, elbow, wrist: { x, y },
+    handAngle: -side * (wave * (Math.PI - 0.25 + arc) + celebrate * (Math.PI - 0.36) - proud * 0.5),
+    palm: raised }
 }
 
 /** Counter-tilt is confined to the torso; soles remain fixed on the floor. */
@@ -93,10 +104,10 @@ export function anthroRig(time: number, reducedMotion = false) {
   const shift = reducedMotion ? 0 : Math.sin(time * 0.85) * 0.85
   return {
     hipX: -2.5 + shift, hipTilt: 0.035, shoulderTilt: -0.025 - shift * 0.008,
-    headY: -89, floor: 96, footY: 89,
+    headY: -70, floor: 116, footY: 104,
     legs: [
-      { hip: { x: -17, y: 37 }, knee: { x: -20, y: 65 }, ankle: { x: -20, y: 85 }, footX: -22 },
-      { hip: { x: 16, y: 38 }, knee: { x: 25, y: 63 }, ankle: { x: 23, y: 85 }, footX: 25 },
+      { hip: { x: -21, y: 82 }, knee: { x: -22, y: 96 }, ankle: { x: -23, y: 103 }, footX: -23 },
+      { hip: { x: 21, y: 82 }, knee: { x: 23, y: 96 }, ankle: { x: 23, y: 103 }, footX: 23 },
     ],
   }
 }

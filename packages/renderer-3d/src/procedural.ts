@@ -78,6 +78,16 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     earMat = mat('ear'),
     pinkMat = mat('innerEar'),
     tipMat = mat('accent')
+  const satinOutline = (source: THREE.Mesh) => {
+    const material = new THREE.MeshBasicMaterial({ color: style.outline.color, side: THREE.BackSide, transparent: true, opacity: 0.45 })
+    inflate(material, 0.003)
+    material.userData.outlineWidth = 0.003
+    materials.add(material)
+    tints.push({ material, slot: 'outline' })
+    const shell = new THREE.Mesh(source.geometry, material)
+    shell.name = 'anthro-satin-outline'
+    source.add(shell)
+  }
   const add = (
     parent: THREE.Object3D,
     geometry: THREE.BufferGeometry,
@@ -91,6 +101,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     parent.add(mesh)
     if (style.material.mode === 'glass') glassColors(geometry)
     if (finish) surfaceFinish(mesh, style, tier, tints, materials, noise, glowTier)
+    if (finish && style.id === 'kawaii' && (name.startsWith('mesh-anthro') || name === 'mesh-forehead-curl')) satinOutline(mesh)
     return mesh
   }
   const faceBody = new THREE.Color(),
@@ -445,11 +456,14 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       lock.rotation.z = roll!
       lock.scale.setScalar(scale!)
     }
+    if (style.id === 'kawaii') for (const mesh of [headMesh, ...ears.map(ear => ear.getObjectByName('mesh-ear')), tail.getObjectByName('mesh-tail')]) {
+      if (mesh instanceof THREE.Mesh) satinOutline(mesh)
+    }
     const anthroBodyMat = mat('body')
     const clothMat = mat('accent')
     clothMat.side = THREE.DoubleSide
     clothMat.userData.fixedColor = style.id === 'anime' ? '#df4322'
-      : style.id === 'plush' ? '#86aaa5' : style.id === 'glass' ? '#9bfff1' : '#a1d8cc'
+      : style.id === 'plush' ? '#96ada0' : style.id === 'glass' ? '#9bfff1' : '#a1d8cc'
     if (clothMat instanceof THREE.MeshPhysicalMaterial && style.id === 'glass') {
       clothMat.transmission = 0
       clothMat.emissive.set('#77ffe9')
@@ -575,8 +589,8 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       if (next.appearance?.pose === 'anthro') ensureAnthro()
       const colors = gradeColors(next.appearance?.colors ?? APRICOT_COLORS, {
         ...style.grade,
-        lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' ? 0.015 : -0.045,
-        saturation: style.grade.saturation * 1.18,
+        lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' || next.appearance?.pose === 'anthro' ? 0.015 : -0.045,
+        saturation: style.grade.saturation * (next.appearance?.pose === 'anthro' ? 0.94 : 1.18),
       })
       const props = styledProportions(next.appearance?.proportions ?? DEFAULT_PROPORTIONS, style)
       for (const tint of tints) {
@@ -592,7 +606,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         color = tint.material.userData.fixedColor ?? color
         tint.material.color.set(tint.material.userData.faceMask ? '#ffffff' : color)
         if (tint.slot === 'outline' && tint.material.userData.grow)
-          tint.material.userData.grow.value = 0.007 * (next.finish?.outlineWidth ?? 1)
+          tint.material.userData.grow.value = (tint.material.userData.outlineWidth ?? 0.007) * (next.finish?.outlineWidth ?? 1)
         if (tint.material instanceof THREE.MeshPhysicalMaterial)
           tint.material.roughness =
             next.finish?.gloss === undefined
@@ -623,6 +637,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         dragActive: drag,
       })
       if (next.appearance?.pose === 'anthro' && action === 'wave' && (!next.emotion || next.emotion === 'neutral')) {
+        expression.eyeOpen /= 1 - expression.squint * 0.45
         expression.smile = 0.3
         expression.mouthOpen = 0
       }
@@ -705,9 +720,9 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         eye.tear.visible = emotion === 'sad' && eye === eyeL
         eye.heart.visible = expression.heartEyes
         eye.pupil.visible = !expression.heartEyes
-        eye.pupil.material.color.set(next.appearance?.pose === 'anthro' ? colors.eye : '#130f13').multiplyScalar(next.appearance?.pose === 'anthro' ? 0.38 : 1)
+        eye.pupilMaterial.color.set(next.appearance?.pose === 'anthro' ? colors.eye : '#130f13').multiplyScalar(next.appearance?.pose === 'anthro' ? 0.38 : 1)
         eye.iris.envMapIntensity = next.appearance?.pose === 'anthro' ? 0.14 : 0.45
-        eye.pupil.material.envMapIntensity = next.appearance?.pose === 'anthro' ? 0.14 : 0.45
+        eye.pupilMaterial.envMapIntensity = next.appearance?.pose === 'anthro' ? 0.14 : 0.45
         eye.iris.color
           .set(style.id === 'glass' ? '#4556bc' : colors.eye)
           .lerp(new THREE.Color(style.id === 'glass' ? '#5cf1ff' : '#ac642e'), next.appearance?.pose === 'anthro' ? 0 : 0.48)
@@ -771,6 +786,9 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       const a = anthroTransition.value, humanoid = a >= 0.5
       if (anthro) anthro.group.visible = humanoid
       forelock.visible = humanoid
+      if (style.id === 'kawaii') group.traverse(node => {
+        if (node.name === 'anthro-satin-outline') node.visible = humanoid
+      })
       const desiredHead = humanoid ? anthroHeadGeometry! : sittingHeadGeometry
       if (headMesh.geometry !== desiredHead) headMesh.traverse(node => {
         if (node instanceof THREE.Mesh) node.geometry = desiredHead
@@ -944,7 +962,8 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   )
   irisMesh.position.x = 0.01
   gaze.add(irisMesh)
-  const pupil = lens(0.097, 0.121, 0.026, material('#130f13', 0.1), 0.078)
+  const pupilMaterial = material('#130f13', 0.1)
+  const pupil = lens(0.097, 0.121, 0.026, pupilMaterial, 0.078)
   pupil.position.y = 0.022
   gaze.add(pupil)
   const shine = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: style.id === 'glass' })
@@ -1022,7 +1041,7 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   tear.position.set(-0.085, -0.19, 0.075)
   group.add(tear)
   head.add(group)
-  return { group, open, closed, lid, tear, gaze, iris, pupil, heart }
+  return { group, open, closed, lid, tear, gaze, iris, pupil, pupilMaterial, heart }
 }
 
 function buildAccessories(

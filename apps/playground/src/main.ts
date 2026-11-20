@@ -53,7 +53,7 @@ pet.config = { behavior: { autonomous: true } }
 const paletteParam = query.get('palette')
 if (paletteParam && Object.hasOwn(PRESET_COLORS, paletteParam)) {
   const preset = presetConfig(paletteParam)
-  pet.setConfig({ species: preset.species, appearance: { colors: preset.appearance.colors, parts: preset.appearance.parts } })
+  pet.setConfig({ species: preset.species, appearance: { colors: preset.appearance.colors, parts: preset.appearance.parts, accessories: preset.appearance.accessories } })
 }
 const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })

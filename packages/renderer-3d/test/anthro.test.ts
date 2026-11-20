@@ -179,6 +179,7 @@ describe('styled anthro integration', () => {
       expect(ANTHRO.hipY * bodyScale / headHeight).toBeLessThan(0.62)
       expect(pet.group.getObjectByName('mesh-body')!.parent!.visible).toBe(false)
       expect(pet.group.getObjectByName('anthro-body')!.visible).toBe(true)
+      if (style === 'kawaii') expect(sleeve.getObjectByName('anthro-satin-outline')).toBeDefined()
       if (style === 'anime') expect(sleeve.getObjectByName('outline')).toBeDefined()
       if (style === 'plush') expect(sleeve.getObjectByName('fur-shell-2')).toBeDefined()
       if (style === 'glass') expect(sleeve.getObjectByName('glass-halo')).toBeDefined()

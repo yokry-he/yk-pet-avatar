@@ -188,6 +188,7 @@ export function presetConfig(name: keyof typeof PRESET_COLORS | string): PetConf
   config.species = preset.species
   config.appearance.colors = { ...preset.colors }
   if (preset.parts) config.appearance.parts = { ...config.appearance.parts, ...preset.parts }
+  if (name === 'lavender') config.appearance.accessories = []
   if (preset.species === 'cat') config.appearance.accessories = [{ kind: 'scarf', color: '#f2c14e' }]
   if (preset.species === 'bunny') config.appearance.accessories = [{ kind: 'flower', color: '#ff8fab' }]
   return config

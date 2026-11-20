@@ -1,7 +1,7 @@
 /** Articulated anthro body. Every surface goes through the renderer's existing style finish. */
 import * as THREE from 'three'
 import { ANTHRO, anthroPose, ARM_LENGTHS, LEG_LENGTHS, type Chain, type Point } from './anthro'
-import { anthroForm, limbSleeve } from './sculpt'
+import { anthroForm, limbSleeve, pillowSurface } from './sculpt'
 
 type AddSurface = (
   parent: THREE.Object3D, geometry: THREE.BufferGeometry,
@@ -34,11 +34,13 @@ export function createAnthroRig(
   emblem.name = 'anthro-chest-emblem'
   torso.add(emblem)
   emblem.visible = style === 'plush'
-  for (const [x, y, radius] of [[-0.085, 0.09, 0.075], [0, 0.14, 0.092], [0.085, 0.09, 0.075], [0, 0.075, 0.085]]) {
-    const lobe = add(emblem, new THREE.SphereGeometry(1, 24, 16), cloth, 'mesh-cloud-decal', false)
-    lobe.position.set(x!, y!, 0.405)
-    lobe.scale.set(radius!, radius!, 0.012)
-  }
+  add(emblem, pillowSurface(
+    [[-0.15, 0.07], [-0.17, 0.12], [-0.13, 0.17], [-0.08, 0.17],
+      [-0.05, 0.23], [0.03, 0.25], [0.09, 0.21], [0.11, 0.17],
+      [0.16, 0.15], [0.18, 0.10], [0.14, 0.06], [0.07, 0.06],
+      [0, 0.04], [-0.07, 0.065]],
+    (x, y, r) => 0.4 * Math.sqrt(Math.max(0, 1 - (x / 0.55) ** 2 - (y / 0.65) ** 2)) + 0.009 + 0.004 * (1 - r * r),
+  ), cloth, 'mesh-cloud-decal', false)
 
   const makeChain = (kind: 'arm' | 'leg', side: number) => {
     const lengths = kind === 'arm' ? ARM_LENGTHS : LEG_LENGTHS
@@ -55,7 +57,7 @@ export function createAnthroRig(
     const end = new THREE.Group()
     end.name = `anthro-${kind === 'arm' ? 'hand' : 'foot'}-${side < 0 ? 'l' : 'r'}`
     // Hands inherit the forearm; feet get a separately solved level orientation.
-    if (kind === 'arm') { joint.add(end); end.position.y = -lengths[1] }
+    if (kind === 'arm') { joint.add(end); end.position.y = -lengths[1]; end.scale.setScalar(1.25) }
     else group.add(end)
     const surface = add(end, anthroForm(kind === 'arm' ? 'hand' : 'boot', detail), cream, `mesh-anthro-${kind === 'arm' ? 'mitten' : 'boot'}`)
     if (kind === 'arm') {
