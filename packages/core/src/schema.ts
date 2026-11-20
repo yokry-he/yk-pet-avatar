@@ -58,6 +58,20 @@ export const APRICOT_COLORS: PetColors = {
 
 export const PRESET_COLORS: Record<string, { species: Species; colors: PetColors; parts?: Partial<PetParts> }> = {
   apricot: { species: 'fox', colors: APRICOT_COLORS },
+  /** Cream fox with lavender ears, tail tip and paw pads (matches the anthro plush reference). */
+  lavender: {
+    species: 'fox',
+    colors: {
+      body: '#f7efdf',
+      belly: '#fcf7ec',
+      ear: '#f4ead8',
+      innerEar: '#c8b2e4',
+      eye: '#4b2f60',
+      accent: '#c6aee6',
+      nose: '#9b7cbb',
+      blush: '#f8b9b0',
+    },
+  },
   cloud: {
     species: 'fox',
     colors: {
@@ -174,6 +188,7 @@ export function presetConfig(name: keyof typeof PRESET_COLORS | string): PetConf
   config.species = preset.species
   config.appearance.colors = { ...preset.colors }
   if (preset.parts) config.appearance.parts = { ...config.appearance.parts, ...preset.parts }
+  if (name === 'lavender') config.appearance.accessories = []
   if (preset.species === 'cat') config.appearance.accessories = [{ kind: 'scarf', color: '#f2c14e' }]
   if (preset.species === 'bunny') config.appearance.accessories = [{ kind: 'flower', color: '#ff8fab' }]
   return config

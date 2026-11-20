@@ -109,6 +109,7 @@ export class ThreePetRenderer implements PetRenderer {
   #loadingUrl = ''
   #loadVersion = 0
   #environment: THREE.WebGLRenderTarget | null = null
+  #lightPose = ''
   #framing = ''
 
   constructor(private readonly options: ThreeRendererOptions = {}) {
@@ -165,7 +166,8 @@ export class ThreePetRenderer implements PetRenderer {
   start(): void {
     if (this.#frame || typeof requestAnimationFrame !== 'function') return
     const loop = (now: number) => {
-      const dt = this.#last ? Math.min(0.05, (now - this.#last) / 1000) : 0
+      // Procedural gestures share the core action clock, even on slow GPU frames.
+      const dt = this.#last ? Math.max(0, (now - this.#last) / 1000) : 0
       this.#last = now
       this.#elapsed += dt
       this.options.onFrame?.(dt)
@@ -173,10 +175,14 @@ export class ThreePetRenderer implements PetRenderer {
       if (next) this.#state = next
       this.#ensurePet(this.#state, false)
       this.#root.rotation.y = this.options.getYaw?.() ?? 0
-      this.#pet?.update(this.#state, this.#elapsed)
-      this.#syncModel(dt)
+      this.#pet?.update(this.#state, this.#state.animationTime ?? this.#elapsed)
+      this.#syncModel(Math.min(0.05, dt))
       this.#fitCamera()
       this.#renderer?.render(this.#scene, this.#camera)
+      if (this.canvas) {
+        this.canvas.dataset.action = this.#state.behavior
+        this.canvas.dataset.animationTime = String(this.#state.animationTime ?? '')
+      }
       this.#watchFps(now)
       this.#frame = requestAnimationFrame(loop)
     }
@@ -198,7 +204,7 @@ export class ThreePetRenderer implements PetRenderer {
   update(state: PetVisualState): void {
     this.#state = state
     this.#ensurePet(state, false)
-    this.#pet?.update(state, this.#elapsed)
+    this.#pet?.update(state, state.animationTime ?? this.#elapsed)
     this.#fitCamera()
     if (!this.#frame) this.#renderer?.render(this.#scene, this.#camera)
   }
@@ -254,6 +260,7 @@ export class ThreePetRenderer implements PetRenderer {
       model: state.model?.url ?? '',
       props: state.props ?? [],
     })
+    if (this.#lightPose !== (state.appearance?.pose ?? 'sit')) this.#applyLights(state)
     if (!force && signature === this.#signature) return
     this.#signature = signature
     this.#pet?.dispose()
@@ -279,10 +286,12 @@ export class ThreePetRenderer implements PetRenderer {
     })
     this.#lights.clear()
     const style = getStyle(state.style)
-    this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * 0.34))
-    const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * 1.35)
+    this.#lightPose = state.appearance?.pose ?? 'sit'
+    const soft = style.id === 'plush'
+    this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * (soft ? 1.15 : 0.34)))
+    const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * (soft ? 0.85 : 1.35))
     key.position.set(-3.0, 4.5, 4.0)
-    const fill = new THREE.DirectionalLight(style.lights.fill, style.lights.fillIntensity * 0.45)
+    const fill = new THREE.DirectionalLight(style.lights.fill, style.lights.fillIntensity * (soft ? 1.2 : 0.45))
     fill.position.set(3.0, 1.8, 2.4)
     const rim = new THREE.DirectionalLight(style.lights.rim, style.lights.rimIntensity)
     rim.position.set(1.5, 3.0, -2.2)
@@ -421,6 +430,7 @@ export class ThreePetRenderer implements PetRenderer {
       this.#state.appearance?.proportions,
       Boolean(this.#model),
       this.#pet?.poseBlend,
+      this.#pet?.anthroBlend,
     ])
     if (signature === this.#framing) return
     this.#framing = signature
@@ -430,14 +440,20 @@ export class ThreePetRenderer implements PetRenderer {
     const yaw = this.#root.rotation.y
     this.#root.rotation.y = 0
     object.updateWorldMatrix(true, true)
+    // Keep the camera's fit independent of the brief squash used to swap anatomy.
+    const pelvis = this.#pet?.group.getObjectByName('bone-hips')
+    const squash = pelvis?.scale.y ?? 1
+    if (pelvis) pelvis.scale.y = 1
     const box = visualBounds(object)
+    if (pelvis) pelvis.scale.y = squash
     this.#root.rotation.y = yaw
     this.#root.updateMatrixWorld(true)
     if (box.isEmpty()) return
     const size = box.getSize(new THREE.Vector3())
     const center = box.getCenter(new THREE.Vector3())
     const distance =
-      cameraFit(Math.hypot(size.x, size.z), size.y, this.#camera.aspect, this.#camera.fov) + size.z * 0.5
+      cameraFit(Math.hypot(size.x, size.z), size.y, this.#camera.aspect, this.#camera.fov) *
+      (1 - 0.10 * (this.#pet?.anthroBlend ?? 0)) + size.z * 0.5
     this.#camera.position.set(center.x, center.y + distance * 0.035, center.z + distance)
     this.#camera.lookAt(center)
     this.#camera.updateProjectionMatrix()

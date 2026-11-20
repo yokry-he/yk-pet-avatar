@@ -1,6 +1,6 @@
 /** Layered Canvas artwork. Geometry and materials stay local to the 2D rig. */
 import {
-  channelValue, getStyle, gradeColors, mixHex, resolveBodyPose, resolveExpression,
+  DEFAULT_PROPORTIONS, channelValue, getStyle, gradeColors, mixHex, resolveBodyPose, resolveExpression,
   resolveQualityTier, shadeHex, socketForAccessory, styledProportions,
   type Accessory, type AttachmentSocket, type BodyPose, type Emotion, type Expression,
   type PetAction, type PetColors, type PetParts, type PetProportions, type PetVisualState,
@@ -9,6 +9,7 @@ import {
 import { eyeLids, idleMotion, naturalBlink } from './motion'
 import { poseRig } from './pose'
 import { compositeGlass, type DrawContext } from './glass'
+import { anthroBlend, anthroHeadGain, anthroRig, armRig, gestureTarget, limbEdges, type GestureWeights, type Point } from './anthro'
 
 interface Env {
   ctx: DrawContext
@@ -32,6 +33,9 @@ interface Env {
   detail: boolean
   blink: number
   rig: ReturnType<typeof poseRig>
+  anthro: number
+  gestures: GestureWeights
+  reduced: boolean
   glassPass?: 'mask' | 'markings'
 }
 const TAU = Math.PI * 2
@@ -49,14 +53,22 @@ const FALLBACK_PROPORTIONS: PetProportions = {
 export function drawPet(
   ctx: CanvasRenderingContext2D, width: number, height: number, dpr: number,
   state: PetVisualState, time: number, yaw = 0,
-  standing = state.appearance?.pose === 'stand' ? 1 : 0,
+  standing = state.appearance?.pose === 'stand' || state.appearance?.pose === 'anthro' ? 1 : 0,
+  anthro = state.appearance?.pose === 'anthro' ? 1 : 0,
+  gestures = gestureTarget(state.behavior),
 ): void {
   const style = getStyle(state.style)
   const colors = gradeColors(state.appearance?.colors ?? FALLBACK_COLORS, style.grade)
-  colors.belly = mixHex(colors.belly, '#fff0d5', 0.45)
-  colors.accent = mixHex(colors.accent, '#fff1dc', 0.35)
+  if (anthro === 0) {
+    colors.belly = mixHex(colors.belly, '#fff0d5', 0.45)
+    colors.accent = mixHex(colors.accent, '#fff1dc', 0.35)
+  }
   if (style.id === 'anime') colors.body = mixHex(colors.body, colors.ear, 0.45)
   const proportions = styledProportions(state.appearance?.proportions ?? FALLBACK_PROPORTIONS, style)
+  if (anthro > 0) {
+    const defaults = styledProportions(DEFAULT_PROPORTIONS, style)
+    proportions.headScale *= 1 + (anthroHeadGain(defaults.headScale, defaults.bodyScale) - 1) * anthro
+  }
   const action = state.behavior || 'idle'
   const reduced = Boolean(state.reducedMotion)
   const drag = Boolean(state.drag?.active)
@@ -68,9 +80,27 @@ export function drawPet(
     Object.assign(pose, { bob: idle.bob, squashX: idle.squashX, squashY: idle.squashY,
       lean: 0, tailWag: idle.tail, tailLift: 0, earTwitch: idle.ear })
   }
+  // A proud biped keeps its feet planted. Keep the original action motion for sit/stand.
+  if (anthro > 0 && !drag) {
+    const planted = ['success', 'happy', 'wave', 'thinking', 'working', 'eating'].includes(action)
+    if (planted) {
+      pose.jump *= 1 - anthro
+      pose.bob += (idle.bob - pose.bob) * anthro
+      pose.squashX += (idle.squashX - pose.squashX) * anthro
+      pose.squashY += (idle.squashY - pose.squashY) * anthro
+    }
+    const blend = anthroBlend(anthro)
+    pose.squashX *= blend.squashX
+    pose.squashY *= blend.squashY
+  }
   // Resolve shared facial weights without its periodic blink; this rig has an irregular one.
   const expression = resolveExpression({ action: knownAction, emotion, speaking: Boolean(state.speaking),
     time, reducedMotion: true, dragActive: drag })
+  if (anthro > 0 && action === 'wave' && emotion === 'neutral') {
+    expression.eyeOpen /= 1 - expression.squint * 0.45
+    expression.smile = 0.3
+    expression.mouthOpen = 0
+  }
   if (!reduced && knownAction !== 'sleep') {
     if (state.speaking || knownAction === 'eating') {
       expression.mouthOpen = Math.max(expression.mouthOpen, 0.2 + Math.abs(Math.sin(time * 10)) * 0.65)
@@ -91,12 +121,20 @@ export function drawPet(
     outlineWidth: ({ kawaii: 1.25, anime: 1.55, plush: 0, glass: 1.05 }[style.id]) * (state.finish?.outlineWidth ?? 1),
     action, headTilt: idle.head, detail: tier !== 'low',
     blink: drag || knownAction === 'sleep' ? 1 : naturalBlink(time, reduced),
-    rig: poseRig(standing),
+    rig: poseRig(standing), anthro, gestures, reduced,
+  }
+  if (anthro > 0) {
+    const rig = anthroRig(time, reduced)
+    env.rig.headY += (rig.headY - env.rig.headY) * anthro
+    env.rig.floor += (rig.floor - env.rig.floor) * anthro
+    env.rig.tailX += (35 - env.rig.tailX) * anthro
+    env.rig.tailY += (70 - env.rig.tailY) * anthro
+    env.rig.stepWeight *= 1 - anthro
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, width, height)
   ctx.save()
-  const unit = Math.min(width, height) / 310
+  const unit = Math.min(width, height) / 310 * (1 - anthro * 0.28)
   // Anime's larger head needs a little extra room above long ears when upright.
   const headroom = style.id === 'anime' ? env.rig.headroom * unit : 0
   ctx.translate(width / 2 - 12 * unit + yaw * 18, height * 0.64 + headroom)
@@ -110,16 +148,17 @@ export function drawPet(
   ctx.scale(env.pose.squashX, env.pose.squashY)
   ctx.translate(0, -floor)
   const seated = !['walk', 'jump', 'working', 'dragged'].includes(action)
-  if (style.id === 'glass' && env.rig.stand > 0) {
+  const glassUnion = Math.max(env.rig.stand, anthro)
+  if (style.id === 'glass' && glassUnion > 0) {
     const merged = compositeGlass(ctx, mask => drawStructure({ ...env, ctx: mask, glassPass: 'mask' }, seated),
-      env.rig.stand, env.outlineWidth, env.detail)
+      glassUnion, env.outlineWidth, env.detail)
     if (merged) {
       // Fade the old material away during the same rig transition, preserving sitting exactly.
-      if (env.rig.stand < 1) {
-        ctx.save(); ctx.globalAlpha *= 1 - env.rig.stand
+      if (glassUnion < 1) {
+        ctx.save(); ctx.globalAlpha *= 1 - glassUnion
         drawStructure(env, seated); ctx.restore()
       }
-      ctx.save(); ctx.globalAlpha *= env.rig.stand
+      ctx.save(); ctx.globalAlpha *= glassUnion
       drawStructure({ ...env, glassPass: 'markings' }, seated); ctx.restore()
     } else drawStructure(env, seated)
   } else drawStructure(env, seated)
@@ -135,17 +174,33 @@ function withHead(env: Env, draw: () => void): void {
   const { ctx, proportions } = env
   ctx.save()
   ctx.translate(0, env.rig.headY)
-  ctx.rotate(env.headTilt)
+  ctx.rotate(env.headTilt - env.anthro * 0.085)
   ctx.scale(proportions.headScale, proportions.headScale)
   draw()
   ctx.restore()
 }
 function drawStructure(env: Env, seated: boolean): void {
+  const body = anthroBlend(env.anthro).body
   drawTail(env)
-  drawHindLegs(env, seated)
-  drawBody(env, seated)
-  drawPaws(env, seated)
+  if (body < 1) {
+    env.ctx.save(); env.ctx.globalAlpha *= 1 - body
+    drawHindLegs(env, seated)
+    drawBody(env, seated)
+    drawPaws(env, seated)
+    env.ctx.restore()
+  }
+  if (body > 0) {
+    env.ctx.save(); env.ctx.globalAlpha *= body
+    drawAnthroArms(env, 'sleeves')
+    drawAnthroBody(env)
+    env.ctx.restore()
+  }
   withHead(env, () => { drawEars(env); drawHead(env) })
+  if (body > 0) {
+    env.ctx.save(); env.ctx.globalAlpha *= body
+    drawAnthroArms(env, 'hands')
+    env.ctx.restore()
+  }
 }
 function isAction(value: string): value is PetAction {
   return ['idle', 'walk', 'sleep', 'happy', 'sad', 'thinking', 'talking', 'eating', 'dragged',
@@ -245,14 +300,17 @@ function paint(env: Env, trace: () => void, fill: string, outlineScale = 1,
     }
     const gradient = ctx.createRadialGradient(x + w * 0.34, y + h * 0.23, w * 0.02,
       x + w * 0.38, y + h * 0.3, Math.max(w * 0.62, h * 0.9))
-    gradient.addColorStop(0, mixHex(fill, '#fff4dd', mode === 'fur' ? 0.32 : 0.28))
+    gradient.addColorStop(0, mixHex(fill, '#fff4dd', mode === 'fur' ? (env.anthro > 0 ? 0.16 : 0.32) : 0.28))
     gradient.addColorStop(0.42, fill)
-    gradient.addColorStop(1, mixHex(fill, '#996141', mode === 'fur' ? 0.33 : 0.24))
+    gradient.addColorStop(1, mixHex(fill, '#996141', mode === 'fur' ? (env.anthro > 0 ? 0.17 : 0.33) : 0.24))
     ctx.fillStyle = gradient; ctx.fill(); ctx.shadowBlur = 0
     ctx.save(); ctx.clip()
     if (mode === 'fur' && env.detail) {
       const texture = getFurTexture(ctx)
-      if (texture) { ctx.fillStyle = texture; ctx.fillRect(x - 2, y - 2, w + 4, h + 4) }
+      if (texture) {
+        ctx.globalAlpha *= 1 - env.anthro * 0.5
+        ctx.fillStyle = texture; ctx.fillRect(x - 2, y - 2, w + 4, h + 4)
+      }
     } else if (mode === 'soft') {
       ctx.beginPath(); trace(); ctx.translate(0.6, 1.1)
       ctx.strokeStyle = 'rgba(255,245,218,0.6)'; ctx.lineWidth = 2.5; ctx.stroke()
@@ -290,7 +348,7 @@ function drawTail(env: Env): void {
   const { ctx, colors: c, proportions: p, pose, parts } = env
   if (parts.tail === 'none') return
   ctx.save(); ctx.translate(env.rig.tailX, env.rig.tailY)
-  ctx.rotate(pose.tailWag * 0.55 + pose.tailLift * 0.16); ctx.scale(p.tailScale, p.tailScale)
+  ctx.rotate(pose.tailWag * 0.55 + pose.tailLift * 0.16); ctx.scale(p.tailScale * (1 + env.anthro * 0.48), p.tailScale * (1 + env.anthro * 0.48))
   if (parts.tail === 'thin') {
     paint(env, () => {
       ctx.moveTo(0, 12); ctx.bezierCurveTo(62, 29, 79, -34, 57, -49)
@@ -400,7 +458,7 @@ function drawEars(env: Env): void {
         ctx.moveTo(-23, 7); ctx.quadraticCurveTo(-26, -23, 12, -60)
         ctx.quadraticCurveTo(24, -70, 25, -51); ctx.quadraticCurveTo(35, -9, 20, 20); ctx.closePath()
       }, c.body, 1, [-24, -64, 54, 85])
-      if (env.style.id === 'anime') paint(env, () => {
+      if (env.style.id === 'anime' && env.anthro < 0.5) paint(env, () => {
         ctx.moveTo(-1, -46); ctx.quadraticCurveTo(26, -79, 25, -51)
         ctx.lineTo(28, -32); ctx.lineTo(21, -37); ctx.lineTo(16, -33); ctx.lineTo(14, -46); ctx.closePath()
       }, '#473027', 0, [-5, -65, 35, 35])
@@ -412,7 +470,7 @@ function drawEars(env: Env): void {
         ctx.moveTo(-14, -7); ctx.quadraticCurveTo(-19, -20, -9, -18)
         ctx.lineTo(0, -11); ctx.quadraticCurveTo(-4, -25, 4, -21)
         ctx.lineTo(15, -4); ctx.lineTo(7, 14); ctx.closePath()
-      }, c.accent, 0, [-18, -23, 36, 38])
+      }, env.anthro > 0 ? c.belly : c.accent, 0, [-18, -23, 36, 38])
     }
     ctx.restore()
   }
@@ -429,6 +487,17 @@ function headPath(ctx: DrawContext, fox: boolean): void {
     ctx.lineTo(-61, 22); ctx.quadraticCurveTo(-69, 20, -70, 15); ctx.quadraticCurveTo(-61, 11, -60, -8)
   } else ctx.quadraticCurveTo(-64, 20, -60, -8)
   ctx.bezierCurveTo(-58, -35, -39, -58, 0, -58); ctx.closePath()
+}
+/** Broad round cheeks with two soft, upturned fur puffs on each side. */
+function anthroHeadPath(ctx: DrawContext, fox: boolean): void {
+  if (!fox) { ctx.ellipse(0, -1, 65, 56, 0, 0, TAU); return }
+  ctx.moveTo(0, -58); ctx.bezierCurveTo(42, -58, 63, -34, 64, -7)
+  ctx.quadraticCurveTo(65, 7, 76, 5); ctx.quadraticCurveTo(79, 17, 66, 23)
+  ctx.quadraticCurveTo(71, 26, 77, 22); ctx.bezierCurveTo(75, 34, 63, 38, 58, 37)
+  ctx.bezierCurveTo(45, 62, -45, 62, -58, 37)
+  ctx.bezierCurveTo(-63, 38, -75, 34, -77, 22); ctx.quadraticCurveTo(-71, 26, -66, 23)
+  ctx.quadraticCurveTo(-79, 17, -76, 5); ctx.quadraticCurveTo(-65, 7, -64, -7)
+  ctx.bezierCurveTo(-63, -34, -42, -58, 0, -58); ctx.closePath()
 }
 let feltFuzz: Path2D | undefined
 function drawFeltFuzz(env: Env): void {
@@ -454,10 +523,20 @@ function drawFeltFuzz(env: Env): void {
 function drawHead(env: Env): void {
   const { ctx, colors: c, species, proportions: p } = env
   const fox = species === 'fox' || species === 'custom'
-  const silhouette = () => env.style.id === 'plush'
-    ? ctx.ellipse(0, -1, 64, 55, 0, 0, TAU) : headPath(ctx, fox)
+  const silhouette = () => env.style.id === 'plush' && env.anthro < 0.5
+    ? ctx.ellipse(0, -1, 64, 55, 0, 0, TAU) : env.anthro > 0.5 ? anthroHeadPath(ctx, fox) : headPath(ctx, fox)
   paint(env, silhouette, c.body, 1, [-70, -58, 140, 112])
   if (env.style.id === 'plush' && env.detail) drawFeltFuzz(env)
+  if (env.anthro > 0) {
+    ctx.save(); ctx.globalAlpha *= env.anthro
+    paint(env, () => {
+      ctx.moveTo(-25, -50); ctx.quadraticCurveTo(-32, -55, -32, -64)
+      ctx.quadraticCurveTo(-19, -58, -5, -60); ctx.bezierCurveTo(12, -64, 22, -44, 10, -26)
+      ctx.quadraticCurveTo(14, -40, -1, -45); ctx.quadraticCurveTo(2, -36, -5, -29)
+      ctx.quadraticCurveTo(-15, -37, -13, -47); ctx.quadraticCurveTo(-19, -44, -25, -50); ctx.closePath()
+    }, c.body, 0.2, [-33, -65, 57, 43])
+    ctx.restore()
+  }
   ctx.save(); ctx.beginPath(); silhouette(); ctx.clip()
   paint(env, () => {
     ctx.moveTo(-73, 18); ctx.quadraticCurveTo(-54, 6, -40, 18)
@@ -483,14 +562,14 @@ function drawFace(env: Env): void {
   const { ctx, colors: c, expression: e, proportions: p, emotion } = env
   for (const side of [-1, 1]) {
     const x = side * 43
-    const blush = (0.22 + e.blush * 0.4) * env.style.blush
-    const rx = (emotion === 'shy' ? 15 : 11) * Math.min(p.cheekScale, 1.35)
+    const blush = (0.22 + env.anthro * 0.16 + e.blush * 0.4) * (env.style.blush + (1 - env.style.blush) * env.anthro * 0.7)
+    const rx = (emotion === 'shy' ? 15 : 11 + env.anthro * 6) * Math.min(p.cheekScale, 1.35)
     const gradient = ctx.createRadialGradient(x, 23, 0, x, 23, rx)
     gradient.addColorStop(0, withAlpha(c.blush, blush + (emotion === 'shy' ? 0.28 : 0)))
     gradient.addColorStop(1, withAlpha(c.blush, 0))
     ctx.save(); ctx.translate(x, 23); ctx.scale(1, 0.62); ctx.translate(-x, -23)
     ctx.fillStyle = gradient; ctx.fillRect(x - rx, 23 - rx, rx * 2, rx * 2); ctx.restore()
-    if (e.blush > 0.3 || emotion === 'neutral') {
+    if (env.anthro === 0 && (e.blush > 0.3 || emotion === 'neutral')) {
       ctx.strokeStyle = withAlpha(shadeHex(c.blush, -0.15), emotion === 'shy' ? 0.8 : 0.5); ctx.lineWidth = 0.85
       for (let i = -1; i <= 1; i++) {
         ctx.beginPath(); ctx.moveTo(x + i * 4 - 1.5, 23); ctx.lineTo(x + i * 4 + 1, 20); ctx.stroke()
@@ -499,7 +578,7 @@ function drawFace(env: Env): void {
   }
   drawEye(env, -26, 1, -1); drawEye(env, 26, 1, 1); drawBrows(env)
   ctx.save(); ctx.scale(p.snoutScale * (env.parts.muzzle === 'long' ? 1.12 : 1), p.snoutScale)
-  const nose = env.style.id === 'glass' ? '#4651a0' : mixHex(mixHex(c.nose, c.eye, 0.83), '#623f29', 0.35)
+  const nose = env.style.id === 'glass' ? '#4651a0' : env.anthro > 0 ? c.nose : mixHex(mixHex(c.nose, c.eye, 0.83), '#623f29', 0.35)
   paint(env, () => {
     ctx.moveTo(-6, 20); ctx.bezierCurveTo(-10, 13, 10, 13, 6, 20)
     ctx.quadraticCurveTo(0, 27, -6, 20); ctx.closePath()
@@ -530,7 +609,7 @@ function drawFace(env: Env): void {
 }
 function drawEye(env: Env, x: number, y: number, side: number): void {
   const { ctx, expression: e, emotion, colors: c, style, parts } = env
-  const size = 12.1 * env.proportions.eyeScale
+  const size = 12.1 * env.proportions.eyeScale * (1 + env.anthro * (1.35 / style.shape.eye - 1))
   const fur = style.id === 'plush'
   const glass = style.id === 'glass'
   const happy = emotion === 'happy' || (e.smile > 0.8 && emotion === 'neutral')
@@ -543,7 +622,7 @@ function drawEye(env: Env, x: number, y: number, side: number): void {
     ctx.quadraticCurveTo(0, happy ? -ry * 0.9 : 7, rx * 0.78, 3); ctx.stroke(); ctx.restore(); return
   }
   ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, side * -0.055, 0, TAU)
-  ctx.fillStyle = glass ? '#34457f' : fur ? '#3e2e25' : '#fffcf5'; ctx.fill()
+  ctx.fillStyle = glass ? '#34457f' : fur && env.anthro === 0 ? '#3e2e25' : '#fffcf5'; ctx.fill()
   ctx.strokeStyle = glass ? '#a8e9ff' : mixHex(c.eye, '#794c2c', 0.3)
   ctx.lineWidth = fur ? 1 : style.id === 'anime' ? 1.8 : 0.9; ctx.stroke()
   ctx.save(); ctx.clip()
@@ -556,13 +635,13 @@ function drawEye(env: Env, x: number, y: number, side: number): void {
   else {
     const gradient = ctx.createLinearGradient(0, -ry, 0, ry)
     gradient.addColorStop(0, glass ? '#19165c' : shadeHex(c.eye, -0.4))
-    gradient.addColorStop(0.48, glass ? '#4237ac' : mixHex(c.eye, '#78451f', 0.45))
-    gradient.addColorStop(1, glass ? '#48d7ed' : mixHex(c.eye, '#d69650', 0.72))
+    gradient.addColorStop(0.48, glass ? '#4237ac' : mixHex(c.eye, env.anthro > 0 ? c.accent : '#78451f', env.anthro > 0 ? 0.08 : 0.45))
+    gradient.addColorStop(1, glass ? '#48d7ed' : mixHex(c.eye, env.anthro > 0 ? c.accent : '#d69650', env.anthro > 0 ? 0.36 : 0.72))
     ctx.fillStyle = gradient; ctx.beginPath(); ctx.ellipse(irisX, irisY, iris, ry * 0.94, 0, 0, TAU); ctx.fill()
     ctx.fillStyle = glass ? '#171d52' : shadeHex(c.eye, -0.55)
     const pupil = iris * 0.65 * e.pupil
     ctx.beginPath(); ctx.ellipse(irisX, irisY - 3, pupil, emotion === 'surprised' ? pupil : ry * 0.68, 0, 0, TAU); ctx.fill()
-    ctx.strokeStyle = glass ? 'rgba(128,244,255,0.7)' : 'rgba(238,180,108,0.45)'; ctx.lineWidth = 1
+    ctx.strokeStyle = glass ? 'rgba(128,244,255,0.7)' : withAlpha(env.anthro > 0 ? c.accent : '#eeb46c', 0.45); ctx.lineWidth = 1
     ctx.beginPath(); ctx.ellipse(irisX, irisY + 1, iris * 0.82, ry * 0.78, 0, 0.28, Math.PI - 0.28); ctx.stroke()
   }
   ctx.fillStyle = '#fffefa'
@@ -593,7 +672,7 @@ function drawEye(env: Env, x: number, y: number, side: number): void {
 }
 function drawBrows(env: Env): void {
   const { ctx, expression: e, emotion } = env
-  ctx.save(); ctx.strokeStyle = env.style.id === 'glass' ? '#c0dcff' : mixHex(env.colors.body, env.colors.eye, 0.58)
+  ctx.save(); ctx.strokeStyle = env.style.id === 'glass' ? '#c0dcff' : mixHex(env.colors.body, env.anthro > 0 ? env.colors.nose : env.colors.eye, env.anthro > 0 ? 0.65 : 0.58)
   ctx.lineCap = 'round'; ctx.lineWidth = emotion === 'angry' || emotion === 'focused' ? 2.4 : 1.6
   for (const side of [-1, 1]) {
     ctx.save(); ctx.translate(side * 27, -28)
@@ -726,6 +805,143 @@ function drawHindLegs(env: Env, seated: boolean): void {
   }
   ctx.restore()
 }
+
+/** A continuous tapered outline follows both limb segments, hiding the joint inside the form. */
+function drawLimb(env: Env, start: Point, joint: Point, end: Point,
+  widths: readonly [number, number, number]): void {
+  const { ctx } = env
+  const { left, right } = limbEdges(start, joint, end, widths)
+  const [a, b, c] = left as [Point, Point, Point]
+  const [d, e, f] = right as [Point, Point, Point]
+  const xs = [...left, ...right].map(p => p.x), ys = [...left, ...right].map(p => p.y)
+  const x = Math.min(...xs), y = Math.min(...ys)
+  const upper = { x: joint.x - start.x, y: joint.y - start.y }
+  const lower = { x: end.x - joint.x, y: end.y - joint.y }
+  const upperLength = Math.hypot(upper.x, upper.y) || 1
+  const lowerLength = Math.hypot(lower.x, lower.y) || 1
+  const tangentLength = Math.hypot(upper.x / upperLength + lower.x / lowerLength,
+    upper.y / upperLength + lower.y / lowerLength) || 1
+  const tangent = { x: (upper.x / upperLength + lower.x / lowerLength) / tangentLength,
+    y: (upper.y / upperLength + lower.y / lowerLength) / tangentLength }
+  const trace = () => {
+    ctx.moveTo(a.x, a.y)
+    ctx.bezierCurveTo(a.x + upper.x * 0.4, a.y + upper.y * 0.4,
+      b.x - tangent.x * upperLength * 0.24, b.y - tangent.y * upperLength * 0.24, b.x, b.y)
+    ctx.bezierCurveTo(b.x + tangent.x * lowerLength * 0.24, b.y + tangent.y * lowerLength * 0.24,
+      c.x - lower.x * 0.4, c.y - lower.y * 0.4, c.x, c.y)
+    ctx.bezierCurveTo(c.x + lower.x / lowerLength * widths[2], c.y + lower.y / lowerLength * widths[2],
+      f.x + lower.x / lowerLength * widths[2], f.y + lower.y / lowerLength * widths[2], f.x, f.y)
+    ctx.bezierCurveTo(f.x - lower.x * 0.4, f.y - lower.y * 0.4,
+      e.x + tangent.x * lowerLength * 0.24, e.y + tangent.y * lowerLength * 0.24, e.x, e.y)
+    ctx.bezierCurveTo(e.x - tangent.x * upperLength * 0.24, e.y - tangent.y * upperLength * 0.24,
+      d.x + upper.x * 0.4, d.y + upper.y * 0.4, d.x, d.y)
+    ctx.bezierCurveTo(d.x - upper.x / upperLength * widths[0], d.y - upper.y / upperLength * widths[0],
+      a.x - upper.x / upperLength * widths[0], a.y - upper.y / upperLength * widths[0], a.x, a.y)
+    ctx.closePath()
+  }
+  paint(env, trace, env.colors.body, 0.85, [x, y - widths[0], Math.max(...xs) - x, Math.max(...ys) - y + widths[0] + 8])
+  if (env.glassPass === 'markings') {
+    ctx.save(); ctx.beginPath(); trace(); ctx.clip()
+    ctx.strokeStyle = 'rgba(205,250,255,0.19)'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'
+    ctx.beginPath(); ctx.moveTo(a.x + upper.x * 0.2 + 3, a.y + upper.y * 0.2)
+    ctx.quadraticCurveTo(b.x + 3, b.y, c.x - lower.x * 0.3 + 3, c.y - lower.y * 0.3); ctx.stroke()
+    ctx.restore()
+  }
+}
+
+function withAnthroTorso(env: Env, draw: () => void): void {
+  const { ctx, proportions: p } = env
+  const rig = anthroRig(env.time, env.reduced)
+  ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
+  ctx.translate(rig.hipX, 0); ctx.rotate(rig.shoulderTilt)
+  draw(); ctx.restore()
+}
+
+function drawAnthroBody(env: Env): void {
+  const { ctx, colors: c, proportions: p } = env
+  const rig = anthroRig(env.time, env.reduced)
+  ctx.save(); ctx.scale(p.bodyScale, p.bodyScale * p.bodyLength)
+  for (const leg of rig.legs) {
+    drawLimb(env, { x: leg.hip.x + rig.hipX, y: leg.hip.y }, leg.knee, leg.ankle, [15, 14, 12])
+    ctx.save(); ctx.translate(leg.footX, rig.footY)
+    ellipse(env, 0, 0, 19, 12, c.belly, 0.65)
+    drawDigits(env, 0, 3, 5)
+    ctx.restore()
+  }
+  ctx.restore()
+  withAnthroTorso(env, () => {
+    paint(env, () => {
+      ctx.moveTo(0, -46)
+      ctx.bezierCurveTo(-33, -46, -42, -15, -49, 13)
+      ctx.bezierCurveTo(-62, 56, -55, 90, 0, 92)
+      ctx.bezierCurveTo(55, 90, 62, 56, 49, 13)
+      ctx.bezierCurveTo(42, -15, 33, -46, 0, -46); ctx.closePath()
+    }, c.body, 1, [-56, -46, 112, 140])
+    ellipse(env, 0, 32, 33, 49, c.belly, 0)
+    drawAnthroCollar(env)
+  })
+}
+
+function drawDigits(env: Env, x: number, y: number, spacing: number): void {
+  if (env.glassPass === 'mask') return
+  const { ctx, style } = env
+  ctx.save(); ctx.lineCap = 'round'; ctx.lineWidth = 0.7
+  ctx.strokeStyle = style.id === 'glass' ? 'rgba(213,251,255,0.5)'
+    : withAlpha(env.outline, style.id === 'plush' ? 0.22 : 0.48)
+  for (const offset of [-spacing, spacing]) {
+    ctx.beginPath(); ctx.moveTo(x + offset, y)
+    ctx.quadraticCurveTo(x + offset - 0.7, y + 2, x + offset, y + 4); ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function drawAnthroArms(env: Env, pass: 'sleeves' | 'hands'): void {
+  const { ctx, colors: c } = env
+  withAnthroTorso(env, () => {
+    for (const side of [-1, 1]) {
+      const arm = armRig(side, env.time, env.gestures, env.reduced,
+        env.proportions.headScale / env.proportions.bodyScale)
+      if (pass === 'sleeves') {
+        drawLimb(env, arm.shoulder, arm.elbow, arm.wrist, [14, 13, 11])
+        continue
+      }
+      ctx.save(); ctx.translate(arm.wrist.x, arm.wrist.y); ctx.rotate(arm.handAngle); ctx.scale(side * 1.4, 1.4)
+      // A faint felt seam keeps the cream waving paw readable against the cheek.
+      const pawEnv = env.style.id === 'plush' ? { ...env, outlineWidth: 0.45,
+        outline: withAlpha(mixHex(c.body, c.eye, 0.3), 0.35) } : env
+      paint(pawEnv, () => {
+        ctx.moveTo(-6, -4); ctx.quadraticCurveTo(-10, -1, -10, 5)
+        ctx.bezierCurveTo(-15, 4, -15, 12, -10, 13)
+        ctx.bezierCurveTo(-11, 24, 11, 24, 11, 12)
+        ctx.quadraticCurveTo(12, 2, 6, -4); ctx.closePath()
+      }, c.belly, 0.65, [-15, -5, 27, 29])
+      drawDigits(env, 0, 15, 3)
+      if (arm.palm > 0 && env.glassPass !== 'mask') {
+        ctx.save(); ctx.globalAlpha *= arm.palm
+        ellipse(env, 1, 9, 5.4, 5.5, c.innerEar, 0)
+        for (const x of [-4, 1, 6]) ellipse(env, x, 17, 2.2, 2.6, c.innerEar, 0)
+        ctx.restore()
+      }
+      ctx.restore()
+    }
+  })
+}
+
+function drawAnthroCollar(env: Env): void {
+  const { ctx, style } = env
+  if (env.glassPass === 'mask' || style.id !== 'plush') return
+  if (env.accessories.some(item => item.kind === 'scarf' && socketForAccessory(item.kind, item.socket).id === 'neck')) return
+  // A single felt decal, kept clear of configured neckwear.
+  ctx.save(); ctx.translate(0, 31)
+  paint(env, () => {
+    ctx.moveTo(-11, 13); ctx.bezierCurveTo(-23, 14, -21, 0, -13, -1)
+    ctx.bezierCurveTo(-14, -13, 4, -15, 7, -5)
+    ctx.bezierCurveTo(20, -9, 25, 11, 12, 13)
+    ctx.quadraticCurveTo(5, 18, -1, 14); ctx.quadraticCurveTo(-7, 17, -11, 13); ctx.closePath()
+  }, '#b6cebf', 0, [-22, -14, 45, 32])
+  ctx.restore()
+}
+
 function applyChannels(pose: BodyPose, channels: PetVisualState['channels']): BodyPose {
   const next = { ...pose }
   const wag = channelValue(channels, 'bone-tail', 'rotation.y')
@@ -737,7 +953,8 @@ function applyChannels(pose: BodyPose, channels: PetVisualState['channels']): Bo
   return next
 }
 /** Map logical sockets onto the rig; head attachments share its tilt. */
-function anchor(socket: AttachmentSocket, rig: Env['rig']): { x: number; y: number; head: boolean } {
+function anchor(socket: AttachmentSocket, env: Env): { x: number; y: number; head: boolean } {
+  const { rig } = env
   const positions: Record<string, [number, number, boolean]> = {
     head: [0, -58, true], 'ear-l': [-48, -52, true], 'ear-r': [48, -52, true],
     neck: [0, 9 + rig.bodyY, false], chest: [0, 30 + rig.bodyY, false], back: [0, 22 + rig.bodyY, false],
@@ -746,13 +963,34 @@ function anchor(socket: AttachmentSocket, rig: Env['rig']): { x: number; y: numb
     'paw-r': [26 - rig.stand * 3, 63 + rig.stand * 5, false], muzzle: [0, 27, true], face: [0, 1, true],
   }
   const at = positions[socket.id]
+  if (at && !at[2] && env.anthro > 0) {
+    const body = anthroRig(env.time, env.reduced)
+    const targets: Record<string, Point> = {
+      neck: { x: body.hipX, y: 16 }, chest: { x: body.hipX, y: 5 }, back: { x: body.hipX, y: 12 },
+    }
+    if (socket.id === 'paw-l' || socket.id === 'paw-r') {
+      const arm = armRig(socket.id === 'paw-l' ? -1 : 1, env.time, env.gestures, env.reduced,
+        env.proportions.headScale / env.proportions.bodyScale)
+      const x = arm.wrist.x - Math.sin(arm.handAngle) * 14
+      const y = arm.wrist.y + Math.cos(arm.handAngle) * 14
+      targets[socket.id] = {
+        x: body.hipX + x * Math.cos(body.shoulderTilt) - y * Math.sin(body.shoulderTilt),
+        y: x * Math.sin(body.shoulderTilt) + y * Math.cos(body.shoulderTilt),
+      }
+    }
+    const target = targets[socket.id]
+    if (target) {
+      at[0] += (target.x * env.proportions.bodyScale - at[0]) * env.anthro
+      at[1] += (target.y * env.proportions.bodyScale * env.proportions.bodyLength - at[1]) * env.anthro
+    }
+  }
   return at ? { x: at[0], y: at[1], head: at[2] }
     : { x: socket.position.x * 150, y: 68 - socket.position.y * 160, head: false }
 }
 function drawAccessories(env: Env, head: boolean): void {
   const { ctx } = env
   for (const item of env.accessories) {
-    const at = anchor(env.sockets?.find(s => s.id === item.socket) ?? socketForAccessory(item.kind, item.socket), env.rig)
+    const at = anchor(env.sockets?.find(s => s.id === item.socket) ?? socketForAccessory(item.kind, item.socket), env)
     if (at.head !== head) continue
     const color = item.color ?? '#8ed9cc'
     ctx.save(); ctx.translate(at.x, at.y)
@@ -795,7 +1033,7 @@ function drawAccessories(env: Env, head: boolean): void {
     ctx.restore()
   }
   for (const prop of env.props ?? []) {
-    const at = anchor(env.sockets?.find(s => s.id === prop.socket) ?? socketForAccessory('prop', prop.socket), env.rig)
+    const at = anchor(env.sockets?.find(s => s.id === prop.socket) ?? socketForAccessory('prop', prop.socket), env)
     if (at.head === head) ellipse(env, at.x, at.y, 6, 6, prop.color ?? '#7af0ff', 0.5)
   }
 }

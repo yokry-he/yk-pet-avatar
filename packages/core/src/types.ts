@@ -15,8 +15,8 @@ export type Species = (typeof SPECIES)[number]
 export const EAR_STYLES = ['pointy', 'round', 'long', 'floppy', 'none'] as const
 export type EarStyle = (typeof EAR_STYLES)[number]
 
-/** Body pose. `sit` is the v0.1 default; `stand` is upright on the hind legs. */
-export const POSES = ['sit', 'stand'] as const
+/** Body pose. `sit` is the v0.1 default; `stand` is upright on the hind legs; `anthro` is a bipedal chibi humanoid with arms and hands. */
+export const POSES = ['sit', 'stand', 'anthro'] as const
 export type PetPose = (typeof POSES)[number]
 
 export const TAIL_STYLES = ['fluffy', 'thin', 'puff', 'bob', 'none'] as const
@@ -278,6 +278,8 @@ export interface DragVisual {
  * the yk-pets visual state; everything else rides along in the same object.
  */
 export interface PetVisualState {
+  /** Fixed procedural sample time for a deterministic preview; transitions snap to target. */
+  animationTime?: number
   behavior: string
   emotion?: string
   speaking?: boolean

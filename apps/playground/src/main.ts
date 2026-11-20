@@ -2,7 +2,9 @@ import './editor.css'
 import {
   ACTION_CATALOG,
   PRESET_COLORS,
+  presetConfig,
   POSES,
+  type PetPose,
   SPECIES_PART_DEFAULTS,
   listStyles,
   type Emotion,
@@ -48,12 +50,23 @@ app.innerHTML = shell()
 const pet = app.querySelector('yk-pet') as YkPetElement
 pet.preference = (query.get('renderer') as RendererPreference) || '2d'
 pet.config = { behavior: { autonomous: true } }
+const paletteParam = query.get('palette')
+if (paletteParam && Object.hasOwn(PRESET_COLORS, paletteParam)) {
+  const preset = presetConfig(paletteParam)
+  pet.setConfig({ species: preset.species, appearance: { colors: preset.appearance.colors, parts: preset.appearance.parts, accessories: preset.appearance.accessories } })
+}
 const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
 const poseParam = query.get('pose')
-if (poseParam === 'sit' || poseParam === 'stand') pet.setConfig({ appearance: { pose: poseParam } })
+if ((POSES as readonly string[]).includes(poseParam ?? '')) pet.setConfig({ appearance: { pose: poseParam as PetPose } })
+const actionParam = query.get('action')
+if (actionParam) {
+  pet.setConfig({ behavior: { autonomous: false } })
+  const hold = query.get('hold') === '1'
+  pet.play(actionParam, hold ? { hold: true, sampleTime: 0.6 } : {})
+}
 const emotionParam = query.get('emotion')
-if (emotionParam) window.setTimeout(() => pet.setEmotion(emotionParam), 300)
+if (emotionParam) pet.setEmotion(emotionParam)
 applyTheme()
 bind()
 refresh()
@@ -351,7 +364,7 @@ function poseControl(config: PetConfig): string {
 
 function bindPoseControl(host: HTMLElement): void {
   host.querySelectorAll<HTMLButtonElement>('[data-pose]').forEach(button => button.addEventListener('click', () => {
-    const pose = button.dataset.pose === 'stand' ? 'stand' : 'sit'
+    const pose = (POSES as readonly string[]).includes(button.dataset.pose ?? '') ? button.dataset.pose as PetPose : 'sit'
     pet.setConfig({ appearance: { pose } })
     refresh()
   }))

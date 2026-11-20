@@ -20,6 +20,8 @@ import {
 } from '@yk-pet/core'
 import * as THREE from 'three'
 import { advancePose, initialPose, interpolateRig } from './pose'
+import { ANTHRO, advanceGesture, anthroHeadGain, anthroPose, initialGesture } from './anthro'
+import { createAnthroRig } from './anthro-rig'
 import { earSurface, pillowSurface, sculptedForm, sweptTail } from './sculpt'
 
 type PetMaterial = THREE.MeshStandardMaterial | THREE.MeshToonMaterial | THREE.MeshBasicMaterial
@@ -30,12 +32,15 @@ interface Tint {
 export interface ProceduralPet {
   group: THREE.Group
   readonly poseBlend: number
+  readonly anthroBlend: number
   update(state: PetVisualState, time: number): void
   dispose(): void
 }
 
 export function createProceduralPet(state: PetVisualState, tier: QualityTier): ProceduralPet {
   const style = getStyle(state.style)
+  const anthroDefaults = styledProportions(DEFAULT_PROPORTIONS, style)
+  const headGain = anthroHeadGain(anthroDefaults.headScale, anthroDefaults.bodyScale)
   const deviceTier = qualityFromState({ behavior: 'idle', quality: 'auto' })
   const glowTier = tier === 'low' || deviceTier === 'low'
     ? 'low'
@@ -73,6 +78,16 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     earMat = mat('ear'),
     pinkMat = mat('innerEar'),
     tipMat = mat('accent')
+  const satinOutline = (source: THREE.Mesh) => {
+    const material = new THREE.MeshBasicMaterial({ color: style.outline.color, side: THREE.BackSide, transparent: true, opacity: 0.45 })
+    inflate(material, 0.003)
+    material.userData.outlineWidth = 0.003
+    materials.add(material)
+    tints.push({ material, slot: 'outline' })
+    const shell = new THREE.Mesh(source.geometry, material)
+    shell.name = 'anthro-satin-outline'
+    source.add(shell)
+  }
   const add = (
     parent: THREE.Object3D,
     geometry: THREE.BufferGeometry,
@@ -86,6 +101,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     parent.add(mesh)
     if (style.material.mode === 'glass') glassColors(geometry)
     if (finish) surfaceFinish(mesh, style, tier, tints, materials, noise, glowTier)
+    if (finish && style.id === 'kawaii' && (name.startsWith('mesh-anthro') || name === 'mesh-forehead-curl')) satinOutline(mesh)
     return mesh
   }
   const faceBody = new THREE.Color(),
@@ -97,7 +113,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   const torsoMesh = add(chest, sculptedForm('body'), torsoMat, 'mesh-body')
   const headMat = mat('body')
   headMat.vertexColors = style.id === 'glass'
-  const headMesh = add(head, sculptedForm('head', tier === 'low' ? 64 : 96), headMat, 'mesh-head')
+  const headMesh = add(head, sculptedForm('head', tier === 'low' ? 64 : 96, style.id === 'plush'), headMat, 'mesh-head')
   headMesh.traverse((node) => {
     const mesh = node as THREE.Mesh
     const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
@@ -105,6 +121,13 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
         paintMarkings(m, faceBody, faceCream, 'face', faceBlush, blushStrength)
   })
+
+  const sittingHeadGeometry = headMesh.geometry
+  let anthroHeadGeometry: THREE.BufferGeometry | undefined
+  const forelock = new THREE.Group()
+  forelock.name = 'anthro-forelock'
+  forelock.visible = false
+  head.add(forelock)
 
   // Snout and cheek tufts share one surface, so cel outlines and fur never form floating plates.
   const muzzle = headMesh
@@ -139,7 +162,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       outer.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
     }
     if (round) outer.scale.y = 0.85
-    const inner = add(bone, earSurface(h * 0.74, w * 0.69, 0.035), pinkMat, 'mesh-inner-ear', false)
+    const inner = add(bone, earSurface(h * 0.74, w * 0.69, 0.035), pinkMat, 'mesh-inner-ear', style.id === 'plush')
     inner.position.set(0, 0.065, 0.102)
     // Small cream tufts nestle in the ear cup.
     if (!long && !round) {
@@ -161,7 +184,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         ),
         creamMat,
         'mesh-ear-tuft',
-        false,
+        style.id === 'plush',
       )
       tuft.scale.setScalar(0.9)
     }
@@ -205,6 +228,8 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     transparent: style.id === 'glass',
   })
   materials.add(ink)
+  const browInk = ink.clone()
+  materials.add(browInk)
   const brows = [-1, 1].map((side) => {
     const brow = stroke(
       [
@@ -213,7 +238,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         [0.052, 0, side < 0 ? 0.012 : -0.014],
       ],
       0.009,
-      ink,
+      browInk,
     )
     brow.position.set(side * 0.25, 0.29, 0.3)
     head.add(brow)
@@ -411,6 +436,57 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     }
     return bone
   })
+  let anthro: ReturnType<typeof createAnthroRig> | undefined
+  const ensureAnthro = () => {
+    if (anthro) return anthro
+    anthroHeadGeometry = sculptedForm('anthro-head', tier === 'low' ? 64 : 96, style.id === 'plush')
+    geometries.add(anthroHeadGeometry)
+    if (style.id === 'glass') glassColors(anthroHeadGeometry)
+    const locks = style.id === 'plush'
+      ? [[-0.055, 0.38, 1.12, 0.14], [-0.23, 0.49, 0.72, -0.95], [0.12, 0.435, 0.68, 0.5]]
+      : [[-0.02, 0.37, 1, 0.12], [-0.23, 0.49, 0.65, -0.9]]
+    for (const [x, y, scale, roll] of locks) {
+      const geometry = new THREE.SphereGeometry(1, 32, 24)
+      const points = geometry.getAttribute('position')
+      for (let i = 0; i < points.count; i++) {
+        const px = points.getX(i), py = points.getY(i), pz = points.getZ(i)
+        const taper = 0.64 + py * 0.34
+        const curl = style.id === 'plush' ? (1 - py) ** 2 * 0.023 : (1 - py) ** 2 * 0.012
+        points.setXYZ(i, px * 0.12 * taper + curl, py * 0.16, pz * (style.id === 'plush' ? 0.09 : 0.065) * taper + (style.id === 'plush' ? (1 - py * py) * 0.035 : 0))
+      }
+      geometry.computeVertexNormals()
+      const lock = add(forelock, geometry, mat('body'), 'mesh-forehead-curl')
+      lock.position.set(x!, y!, style.id === 'plush' ? (scale! > 1 ? 0.385 : 0.30) : scale === 1 ? 0.365 : 0.23)
+      lock.rotation.z = roll!
+      lock.scale.setScalar(scale!)
+    }
+    if (style.id === 'kawaii') for (const mesh of [headMesh, ...ears.map(ear => ear.getObjectByName('mesh-ear')), tail.getObjectByName('mesh-tail')]) {
+      if (mesh instanceof THREE.Mesh) satinOutline(mesh)
+    }
+    const anthroBodyMat = mat('body')
+    const clothMat = mat('accent')
+    clothMat.side = THREE.DoubleSide
+    clothMat.userData.fixedColor = style.id === 'anime' ? '#df4322'
+      : style.id === 'plush' ? '#96ada0' : style.id === 'glass' ? '#9bfff1' : '#a1d8cc'
+    if (clothMat instanceof THREE.MeshPhysicalMaterial && style.id === 'glass') {
+      clothMat.transmission = 0
+      clothMat.emissive.set('#77ffe9')
+      clothMat.emissiveIntensity = 0.7
+    }
+    anthro = createAnthroRig(add, anthroBodyMat, mat('body'), creamMat, beanMat, clothMat, ink, style.id, tier === 'low' ? 24 : 40)
+    hips.add(anthro.group)
+    if (style.id === 'plush') anthro.emblem.position.z = 0.055
+    anthro.torsoMesh.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+      for (const m of list)
+        if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
+          paintMarkings(m, faceBody, faceCream, 'anthro-chest', faceBlush, blushStrength)
+    })
+    // An explicitly configured scarf replaces the small style outfit hint.
+    anthro.collar.visible = false
+    return anthro
+  }
   const tail = new THREE.Group()
   tail.name = 'bone-tail'
   tail.position.set(0.29, 0.24, -0.2)
@@ -465,6 +541,16 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   shadow.rotation.x = -Math.PI / 2
   shadow.position.set(0.12, 0.012, 0)
   group.add(shadow)
+  if (style.id === 'plush') {
+    shadowMat.opacity = 0.20
+    shadow.scale.set(1.25, 1.1, 1)
+    const contact = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.63), shadowMat.clone())
+    contact.name = 'felt-ground-contact'
+    contact.material.opacity = 0.24
+    contact.rotation.x = -Math.PI / 2
+    contact.position.set(0, 0.014, 0.08)
+    group.add(contact)
+  }
   if (style.platform === 'ring') {
     for (let i = 0; i < 3; i++) {
       const ring = new THREE.Mesh(
@@ -502,18 +588,26 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
   }
 
   let disposed = false
-  let transition = initialPose(state.appearance?.pose)
+  let transition = initialPose(state.appearance?.pose === 'anthro' ? 'stand' : state.appearance?.pose)
+  let anthroTransition = initialPose(state.appearance?.pose === 'anthro' ? 'stand' : 'sit')
+  let gesture = initialGesture((state.behavior || 'idle') as PetAction)
   let lastTime = 0
   const pet: ProceduralPet = {
     group,
     get poseBlend() {
       return transition.value
     },
+    get anthroBlend() {
+      return anthroTransition.value
+    },
     update(next, time) {
+      const sampled = next.animationTime !== undefined
+      time = next.animationTime ?? time
+      if (next.appearance?.pose === 'anthro') ensureAnthro()
       const colors = gradeColors(next.appearance?.colors ?? APRICOT_COLORS, {
         ...style.grade,
-        lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' ? 0.015 : -0.045,
-        saturation: style.grade.saturation * 1.18,
+        lightness: style.id === 'glass' ? 0.02 : style.id === 'anime' || next.appearance?.pose === 'anthro' ? 0.015 : -0.045,
+        saturation: style.grade.saturation * (next.appearance?.pose === 'anthro' ? 0.94 : style.id === 'plush' ? 1 : 1.18),
       })
       const props = styledProportions(next.appearance?.proportions ?? DEFAULT_PROPORTIONS, style)
       for (const tint of tints) {
@@ -526,15 +620,16 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
               : tint.slot === 'belly' || tint.slot === 'accent'
                 ? '#b5eaff'
                 : '#8abfff'
+        color = tint.material.userData.fixedColor ?? color
         tint.material.color.set(tint.material.userData.faceMask ? '#ffffff' : color)
         if (tint.slot === 'outline' && tint.material.userData.grow)
-          tint.material.userData.grow.value = 0.007 * (next.finish?.outlineWidth ?? 1)
+          tint.material.userData.grow.value = (tint.material.userData.outlineWidth ?? 0.007) * (next.finish?.outlineWidth ?? 1)
         if (tint.material instanceof THREE.MeshPhysicalMaterial)
           tint.material.roughness =
             next.finish?.gloss === undefined
               ? tint.material.userData.roughness
               : THREE.MathUtils.lerp(style.material.roughness, 0.12, next.finish.gloss)
-        if (tint.slot === 'innerEar' && style.id !== 'glass')
+        if (tint.slot === 'innerEar' && style.id !== 'glass' && next.appearance?.pose !== 'anthro')
           tint.material.color.lerp(new THREE.Color('#ed8d94'), 0.25)
       }
       faceBody.set(style.id === 'glass' ? '#83c9ff' : colors.body)
@@ -558,7 +653,15 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         reducedMotion: reduced,
         dragActive: drag,
       })
-      transition = advancePose(transition, next.appearance?.pose, time - lastTime, reduced)
+      if (next.appearance?.pose === 'anthro' && action === 'wave' && (!next.emotion || next.emotion === 'neutral')) {
+        expression.eyeOpen /= 1 - expression.squint * 0.45
+        expression.smile = 0.3
+        expression.mouthOpen = 0
+      }
+      const dt = time - lastTime
+      transition = advancePose(transition, next.appearance?.pose === 'anthro' ? 'stand' : next.appearance?.pose, dt, sampled || reduced)
+      anthroTransition = advancePose(anthroTransition, next.appearance?.pose === 'anthro' ? 'stand' : 'sit', dt, sampled || reduced)
+      gesture = advanceGesture(gesture, action, dt, sampled || reduced)
       lastTime = time
       const rig = interpolateRig(transition.value)
       const t = reduced ? 0 : time
@@ -615,7 +718,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         : emotion === 'surprised' ? expression.eyeOpen * 0.90
         : Math.max(0.045, expression.eyeOpen)
       for (const eye of [eyeL, eyeR]) {
-        eye.group.position.z = 0.363 * snoutDepth
+        eye.group.position.z = (style.id === 'plush' ? 0.385 : 0.363) * snoutDepth
         const dot = parts.eyes === 'dot' ? 0.65 : 1,
           almond = parts.eyes === 'almond' ? 0.82 : 1
         const eyeSize = props.eyeScale / style.shape.eye
@@ -625,7 +728,8 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
           1,
         )
         eye.gaze.position.set((next.pointer?.x ?? 0) * 0.015, -(next.pointer?.y ?? 0) * 0.012, 0)
-        eye.pupil.scale.set(0.097 * expression.pupil, 0.121 * expression.pupil, 0.026)
+        const pupilSize = next.appearance?.pose === 'anthro' ? 0.74 : 1
+        eye.pupil.scale.set(0.097 * expression.pupil * pupilSize, 0.121 * expression.pupil * pupilSize, 0.026)
         eye.open.visible = !joyful
         eye.closed.visible = joyful
         eye.lid.visible = emotion === 'tired' && !joyful
@@ -633,10 +737,15 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         eye.tear.visible = emotion === 'sad' && eye === eyeL
         eye.heart.visible = expression.heartEyes
         eye.pupil.visible = !expression.heartEyes
+        eye.pupilMaterial.color.set(next.appearance?.pose === 'anthro' ? colors.eye : '#130f13').multiplyScalar(style.id === 'plush' ? 0.20 : next.appearance?.pose === 'anthro' ? 0.38 : 1)
+        eye.iris.envMapIntensity = style.id === 'plush' ? 0.10 : next.appearance?.pose === 'anthro' ? 0.14 : 0.45
+        eye.pupilMaterial.envMapIntensity = style.id === 'plush' ? 0.10 : next.appearance?.pose === 'anthro' ? 0.14 : 0.45
         eye.iris.color
           .set(style.id === 'glass' ? '#4556bc' : colors.eye)
-          .lerp(new THREE.Color(style.id === 'glass' ? '#5cf1ff' : '#ac642e'), 0.48)
+          .lerp(new THREE.Color(style.id === 'glass' ? '#5cf1ff' : '#ac642e'), next.appearance?.pose === 'anthro' || style.id === 'plush' ? 0 : 0.48)
       }
+      browInk.color.set(next.appearance?.pose === 'anthro' ? colors.nose : style.id === 'glass' ? '#425796' : '#5b3426')
+      if (next.appearance?.pose === 'anthro') browInk.color.lerp(new THREE.Color(colors.body), 0.35)
       brows.forEach((brow, i) => {
         const side = i === 0 ? -1 : 1
         brow.position.z = 0.3 * snoutDepth
@@ -691,6 +800,112 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         paw.rotation.z +=
           channelValue(next.channels, i === 0 ? 'bone-paw-l' : 'bone-paw-r', 'rotation.z') ?? 0
       })
+      const a = anthroTransition.value, humanoid = a >= 0.5
+      if (anthro) anthro.group.visible = humanoid
+      forelock.visible = humanoid
+      if (style.id === 'kawaii') group.traverse(node => {
+        if (node.name === 'anthro-satin-outline') node.visible = humanoid
+      })
+      const desiredHead = humanoid ? anthroHeadGeometry! : sittingHeadGeometry
+      if (headMesh.geometry !== desiredHead) headMesh.traverse(node => {
+        if (node instanceof THREE.Mesh) node.geometry = desiredHead
+      })
+      // Keep the older dark ear tips for sit/stand, pale ear rims for the plush reference.
+      for (const ear of ears) {
+        const mesh = ear.getObjectByName('mesh-ear') as THREE.Mesh
+        const color = mesh.geometry.getAttribute('color')
+        if (color && mesh.userData.pale !== humanoid) {
+          mesh.userData.originalColors ??= color.array.slice()
+          if (humanoid) color.array.fill(1)
+          else color.array.set(mesh.userData.originalColors)
+          color.needsUpdate = true
+          mesh.userData.pale = humanoid
+        }
+      }
+      chest.visible = !humanoid
+      paws.forEach((paw) => { paw.visible = !humanoid })
+      hindFeet.forEach((foot) => { foot.visible = !humanoid })
+      hindLegs.forEach((leg) => { leg.visible = !humanoid && rig.legScale > 0 })
+      // A short squash hides the anatomy swap; ordinary sit/stand interpolation is unchanged.
+      hips.scale.y = 1 - Math.sin(Math.PI * a) * 0.84
+      if (a > 0) {
+        const anthroRig = ensureAnthro()
+        const bodyScale = props.bodyScale, heightScale = props.bodyScale * props.bodyLength
+        const anthroHeadScale = props.headScale * headGain
+        const humanoidPose = anthroPose(time, gesture.value, reduced, anthroHeadScale / bodyScale)
+        anthroRig.update(humanoidPose)
+        anthroRig.group.scale.set(bodyScale, heightScale, bodyScale)
+        head.position.y = THREE.MathUtils.lerp(head.position.y, (ANTHRO.neckY + humanoidPose.breath) * heightScale + 0.46 * anthroHeadScale, a)
+        head.scale.setScalar(THREE.MathUtils.lerp(props.headScale, anthroHeadScale, a))
+        head.position.x = humanoidPose.shift * bodyScale * a
+        head.rotation.z += 0.09 * a
+        // Bigger oval eyes with dark glossy irises; tiny nose and soft brows.
+        for (const eye of [eyeL, eyeR]) {
+          eye.group.scale.x *= 1 + 0.12 * a
+          eye.group.scale.y *= 1 + 0.15 * a
+          eye.group.position.y = 0.025
+        }
+        nose.scale.setScalar(1 - 0.22 * a)
+        mouth.scale.setScalar(1 - 0.15 * a)
+        brows.forEach(brow => { brow.scale.setScalar(0.9); brow.position.z += 0.038 * a })
+        blushStrength.value = Math.max(blushStrength.value, 0.68 * a)
+        anthroRig.emblem.visible = style.id === 'plush' && !(next.appearance?.accessories ?? []).some(item => item.kind === 'scarf')
+        hips.position.y *= 1 - a
+        hips.rotation.x *= 1 - a
+        tail.position.y = THREE.MathUtils.lerp(rig.tailY, ANTHRO.tailY * heightScale, a)
+        tail.position.z = THREE.MathUtils.lerp(rig.tailZ, -0.25 * bodyScale, a)
+        const tailMesh = tail.getObjectByName('mesh-tail') as THREE.Mesh | undefined
+        if (tailMesh && parts.tail === 'fluffy') {
+          tailMesh.userData.originalGeometry ??= tailMesh.geometry
+          if (!tailMesh.userData.anthroGeometry) {
+            const geometry = sweptTail(false, 48, true)
+            geometries.add(geometry)
+            if (style.id === 'glass') glassColors(geometry)
+            tailMesh.userData.anthroGeometry = geometry
+          }
+          tailMesh.traverse(node => { if (node instanceof THREE.Mesh) node.geometry = tailMesh.userData.anthroGeometry })
+        }
+        tail.scale.multiplyScalar(1 + 0.55 * a)
+        tail.position.x += 0.01 * a
+        tail.rotation.z += -0.02 * a
+        // Configured accessories keep their sockets on the new anatomy.
+        if (humanoid) {
+          accessories.position.y = 0
+          for (const item of accessories.children) {
+            const id = item.userData.socket as string
+            const side = id.endsWith('-l') ? 0 : 1
+            if (id === 'paw-l' || id === 'paw-r') {
+              const wrist = humanoidPose.arms[side]!.end
+              item.position.set(wrist[0] * bodyScale, wrist[1] * heightScale - 0.06, wrist[2] * bodyScale + 0.10)
+            } else if (id === 'head' || id === 'ear-l' || id === 'ear-r' || id === 'face' || id === 'muzzle') {
+              const base = item.userData.socketBase as THREE.Vector3
+              item.position.set(base.x * anthroHeadScale + head.position.x,
+                head.position.y + (id === 'head' ? 0.62 : id.startsWith('ear-') ? 0.5 : id === 'face' ? 0.05 : -0.15) * anthroHeadScale,
+                id === 'face' || id === 'muzzle' ? 0.58 * anthroHeadScale : base.z)
+            } else {
+              const base = item.userData.socketBase as THREE.Vector3
+              item.position.set((id === 'neck' && anthroRig.collar.visible ? base.x + 0.22 : base.x) * bodyScale, (id === 'neck' ? ANTHRO.neckY - 0.02 : id === 'tail' ? ANTHRO.tailY : ANTHRO.torsoY) * heightScale,
+                id === 'neck' ? 0.14 * bodyScale : base.z * bodyScale)
+            }
+          }
+        }
+        for (const [i, arm] of anthroRig.arms.entries())
+          arm.root.rotation.z += channelValue(next.channels, i === 0 ? 'bone-paw-l' : 'bone-paw-r', 'rotation.z') ?? 0
+      } else {
+        head.position.x = 0
+        const tailMesh = tail.getObjectByName('mesh-tail') as THREE.Mesh | undefined
+        if (tailMesh?.userData.originalGeometry) tailMesh.traverse(node => {
+          if (node instanceof THREE.Mesh) node.geometry = tailMesh.userData.originalGeometry
+        })
+        nose.scale.setScalar(1)
+        mouth.scale.setScalar(1)
+        brows.forEach(brow => brow.scale.setScalar(1))
+        for (const eye of [eyeL, eyeR]) eye.group.position.y = 0.055
+      }
+      if (!humanoid) for (const item of accessories.children) {
+        const base = item.userData.socketBase as THREE.Vector3
+        item.position.copy(base)
+      }
     },
     dispose() {
       if (disposed) return
@@ -728,6 +943,7 @@ function stroke(points: number[][], radius: number, material: THREE.Material): T
 }
 
 function makeEye(head: THREE.Group, side: number, style: StylePreset, materials: Set<THREE.Material>) {
+  const felt = style.id === 'plush'
   const group = new THREE.Group()
   group.position.set(side * 0.255, 0.055, 0.363)
   group.rotation.y = side * 0.28
@@ -752,11 +968,40 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   const open = new THREE.Group()
   open.name = 'eye-open'
   group.add(open)
-  open.add(lens(0.159, 0.192, 0.035, material(style.id === 'glass' ? '#afdfff' : '#fff0d4', 0.7), 0))
+  open.add(lens(0.159, 0.192, 0.035, material(felt ? '#49353e' : style.id === 'glass' ? '#afdfff' : '#fff0d4', 0.7), 0))
+  if (felt) open.add(lens(0.151, 0.183, 0.033, material('#fff5ef', 0.55), 0.014))
   const gaze = new THREE.Group()
   open.add(gaze)
   gaze.add(lens(0.137, 0.171, 0.033, material('#fff9ef', 0.6), 0.025))
-  const iris = material('#86502c', 0.12)
+  if (felt) {
+    const rim = lens(0.131, 0.164, 0.035, material('#251b2a', 0.22), 0.045)
+    rim.name = 'felt-eye-limbal-rim'
+    rim.position.x = 0.01
+    gaze.add(rim)
+  }
+  const iris = material('#86502c', felt ? 0.16 : 0.12)
+  if (felt) {
+    iris.clearcoat = 0.55
+    iris.specularIntensity = 0.35
+    iris.clearcoatRoughness = 0.1
+    iris.ior = 1.46
+    // Pigment sits below the convex specular surface; the lower iris catches more light.
+    iris.onBeforeCompile = shader => {
+      shader.vertexShader = 'varying vec3 vIrisLocal;\n' + shader.vertexShader.replace(
+        '#include <begin_vertex>', '#include <begin_vertex>\nvIrisLocal = position;',
+      )
+      shader.fragmentShader = 'varying vec3 vIrisLocal;\n' + shader.fragmentShader.replace(
+        '#include <color_fragment>', `#include <color_fragment>
+          float irisDepth = 1.0-smoothstep(-0.85,0.65,vIrisLocal.y);
+          float irisRim = smoothstep(0.70,0.98,length(vIrisLocal.xy));
+          float irisFiber = 0.97 + 0.03*sin(atan(vIrisLocal.y,vIrisLocal.x)*70.0);
+          diffuseColor.rgb *= mix(vec3(0.28,0.23,0.34),vec3(1.45,1.12,1.5),irisDepth)
+            * (1.0-irisRim*0.65) * irisFiber;
+        `,
+      )
+    }
+    iris.customProgramCacheKey = () => 'felt-iris-depth-v1'
+  }
   const irisMesh = lens(
     style.id === 'anime' ? 0.131 : 0.123,
     style.id === 'anime' ? 0.163 : 0.155,
@@ -764,16 +1009,26 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   )
   irisMesh.position.x = 0.01
   gaze.add(irisMesh)
-  const pupil = lens(0.097, 0.121, 0.026, material('#130f13', 0.1), 0.078)
+  const pupilMaterial = material('#130f13', felt ? 0.07 : 0.1)
+  if (felt) { pupilMaterial.clearcoat = 0.4; pupilMaterial.clearcoatRoughness = 0.18; pupilMaterial.specularIntensity = 0.25 }
+  const pupil = lens(0.097, 0.121, 0.026, pupilMaterial, 0.078)
   pupil.position.y = 0.022
   gaze.add(pupil)
   const shine = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: style.id === 'glass' })
   materials.add(shine)
   for (const [x, y, r] of [
-    [-0.039, 0.077, style.id === 'anime' ? 0.042 : 0.029],
+    [-0.039, 0.077, style.id === 'anime' ? 0.042 : felt ? 0.041 : 0.029],
     [0.045, -0.058, 0.012],
   ]) {
-    const light = lens(r!, r!, 0.009, shine, 0.11)
+    const soft = felt && y! > 0
+    const softShine = soft ? new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      vertexShader: 'varying vec2 vShineUV; void main(){vShineUV=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
+      fragmentShader: 'varying vec2 vShineUV; void main(){float r=length(vShineUV*2.0-1.0);gl_FragColor=vec4(1.0,0.98,1.0,1.0-smoothstep(0.58,1.0,r));}',
+    }) : undefined
+    if (softShine) materials.add(softShine)
+    const light = softShine ? new THREE.Mesh(new THREE.PlaneGeometry(r!*2,r!*2), softShine) : lens(r!, r!, 0.009, shine, 0.11)
+    if (softShine) { light.position.z = 0.12; light.name = 'felt-eye-soft-catchlight' }
     light.position.x = x!
     light.position.y = y!
     gaze.add(light)
@@ -842,7 +1097,7 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   tear.position.set(-0.085, -0.19, 0.075)
   group.add(tear)
   head.add(group)
-  return { group, open, closed, lid, tear, gaze, iris, pupil, heart }
+  return { group, open, closed, lid, tear, gaze, iris, pupil, pupilMaterial, heart }
 }
 
 function buildAccessories(
@@ -857,6 +1112,8 @@ function buildAccessories(
     const holder = new THREE.Group()
     holder.name = `socket-${socket.id}`
     holder.position.set(socket.position.x, socket.position.y - 0.08, socket.position.z)
+    holder.userData.socket = socket.id
+    holder.userData.socketBase = holder.position.clone()
     parent.add(holder)
     const color = new THREE.Color(item.color ?? '#8ed9cc')
     const mat =
@@ -914,6 +1171,8 @@ function buildAccessories(
     )
     bead.name = `prop-${prop.id}`
     bead.position.set(socket.position.x, socket.position.y - 0.08, socket.position.z + 0.05)
+    bead.userData.socket = socket.id
+    bead.userData.socketBase = bead.position.clone()
     parent.add(bead)
   }
 }
@@ -990,13 +1249,16 @@ function surfaceFinish(
         color: '#ffffff',
         vertexColors: original instanceof THREE.MeshStandardMaterial && original.vertexColors,
         roughness: 1,
-        alphaMap: noise,
-        alphaTest: 0.36 + (i / layers) * 0.18,
+        envMapIntensity: 0.12,
+        alphaTest: 0.025,
         transparent: true,
-        opacity: 0.65 * (1 - i / (layers + 1)),
+        opacity: 0.62 * (1 - 0.72 * i / layers),
         depthWrite: false,
       })
-      inflate(m, style.material.furLength * (i / layers) * 0.8)
+      m.userData.fixedColor = original.userData.fixedColor
+      const groom = /mitten|front-paw|hind-foot/.test(source.name) ? 0.10 : /tuft|curl|inner-ear/.test(source.name) ? 0.24 : /boot|foot/.test(source.name) ? 0.4 : 1
+      inflate(m, style.material.furLength * (i / layers) ** 0.85 * groom)
+      feltSurface(m, noise!, i / layers, source.name === 'mesh-head')
       materials.add(m)
       tints.push({ material: m, slot: tint?.slot ?? 'body' })
       return m
@@ -1008,6 +1270,40 @@ function surfaceFinish(
     shell.name = `fur-shell-${i}`
     source.add(shell)
   }
+}
+
+/** Correlated strand masks across shells form a tapered coat, including the silhouette.
+ * The base has fine wool grain; velvet grazing light needs no render targets or passes. */
+function feltSurface(material: THREE.MeshStandardMaterial, grain: THREE.Texture, height: number, face = false): void {
+  material.userData.felt = true
+  const before = material.onBeforeCompile.bind(material), key = material.customProgramCacheKey()
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer)
+    shader.uniforms.uFeltGrain = { value: grain }
+    shader.vertexShader = 'varying vec2 vFeltUV; varying vec3 vFeltPosition;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>', `#include <begin_vertex>
+        vFeltUV = uv * vec2(3.0,2.0); vFeltPosition = position;
+        ${face ? `
+          // Close-cropped facial wool keeps the inset eyes, brows and mouth unobstructed.
+          float faceGroom = smoothstep(0.18,0.32,position.z) * (1.0-smoothstep(0.42,0.59,abs(position.x)));
+          transformed -= normalize(normal) * uGrow * faceGroom * 0.94;
+        ` : ''}
+      `,
+    )
+    shader.fragmentShader = 'uniform sampler2D uFeltGrain; varying vec2 vFeltUV; varying vec3 vFeltPosition;\n' + shader.fragmentShader.replace(
+      '#include <color_fragment>', `#include <color_fragment>
+        float woolGrain = texture2D(uFeltGrain,vFeltUV).r;
+        float woolMottle = sin(vFeltPosition.x*31.0+sin(vFeltPosition.y*23.0))*sin(vFeltPosition.z*27.0+vFeltPosition.y*11.0);
+        diffuseColor.rgb *= mix(0.90,1.06,woolGrain) * (0.985+0.015*woolMottle);
+        ${height > 0 ? `diffuseColor.a *= smoothstep(${(0.27 + height * 0.32 - 0.07).toFixed(4)},${(0.27 + height * 0.32 + 0.07).toFixed(4)},woolGrain);` : ''}
+      `,
+    ).replace('#include <opaque_fragment>', `
+      float woolRim = pow(1.0-abs(dot(normal,normalize(vViewPosition))),2.4);
+      outgoingLight += diffuseColor.rgb * woolRim * ${height > 0 ? '0.16' : '0.10'};
+      #include <opaque_fragment>
+    `)
+  }
+  material.customProgramCacheKey = () => `${key}:felt-v2:${height.toFixed(4)}:${face}`
 }
 
 function materialFor(
@@ -1051,19 +1347,21 @@ function materialFor(
     innerGlow(material)
     return material
   }
-  return new THREE.MeshPhysicalMaterial({
+  const material = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: style.id === 'plush' ? 0.97 : 0.54,
     metalness: 0,
     clearcoat: style.id === 'plush' ? 0 : 0.12,
     clearcoatRoughness: 0.52,
     sheen: style.id === 'plush' ? 1 : 0.16,
-    sheenColor: new THREE.Color('#ffdfbc'),
+    sheenColor: new THREE.Color(style.id === 'plush' ? '#fff1e9' : '#ffdfbc'),
     sheenRoughness: 0.85,
     envMapIntensity: 0.16,
     bumpMap: noise ?? null,
-    bumpScale: style.id === 'plush' ? 0.008 : 0,
+    bumpScale: style.id === 'plush' ? 0.006 : 0,
   })
+  if (style.id === 'plush' && noise) feltSurface(material, noise, 0)
+  return material
 }
 
 function glassColors(geometry: THREE.BufferGeometry): void {
@@ -1097,14 +1395,21 @@ function furTexture(): THREE.DataTexture {
   const size = 128,
     data = new Uint8Array(size * size * 4)
   let seed = 7391
-  for (let i = 0; i < data.length; i += 4) {
+  const grain = new Float32Array(size * size)
+  for (let i = 0; i < grain.length; i++) {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
-    const value = seed >>> 24
-    data.set([value, value, value, 255], i)
+    grain[i] = (seed >>> 24) / 255
+  }
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const at = (row: number) => grain[((row + size) % size) * size + x]!
+    const value = Math.round(255 * (at(y) * 0.55 + at(y - 1) * 0.30 + at(y - 2) * 0.15))
+    data.set([value, value, value, 255], (y * size + x) * 4)
   }
   const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping
-  texture.repeat.set(5, 3)
+  texture.repeat.set(3, 2)
+  texture.minFilter = THREE.LinearMipmapLinearFilter
+  texture.generateMipmaps = true
   texture.magFilter = THREE.LinearFilter
   texture.needsUpdate = true
   return texture
@@ -1130,7 +1435,7 @@ function paintMarkings(
   material: THREE.Material,
   body: THREE.Color,
   cream: THREE.Color,
-  pattern: 'face' | 'chest',
+  pattern: 'face' | 'chest' | 'anthro-chest',
   blush: THREE.Color,
   blushStrength: { value: number },
 ): void {
@@ -1160,7 +1465,10 @@ function paintMarkings(
         float chin = length(vec2(vPetLocal.x / 0.34, (vPetLocal.y+0.40) / 0.11));
         float mask = (1.0-smoothstep(0.98,1.02,min(snout,min(cheek,chin)))) * smoothstep(-0.12,0.06,vPetLocal.z);
       `
-          : `
+          : pattern === 'anthro-chest' ? `
+        float belly = length(vec2(vPetLocal.x / 0.25, (vPetLocal.y + 0.015) / 0.325));
+        float mask = (1.0-smoothstep(0.97,1.01,belly)) * smoothstep(0.10,0.20,vPetLocal.z);
+      ` : `
         float height = clamp((vPetLocal.y+0.29)/0.64,0.0,1.0);
         float width = 0.235 * pow(height,0.63);
         float mask = (1.0-smoothstep(width-0.003,width+0.003,abs(vPetLocal.x))) * smoothstep(-0.30,-0.28,vPetLocal.y) * smoothstep(0.10,0.22,vPetLocal.z);
@@ -1174,6 +1482,11 @@ function paintMarkings(
           : ''
       }
       diffuseColor.rgb *= pigment;
+      ${material.userData.felt && pattern !== 'face' ? `
+        float neckAO = exp(-pow((vPetLocal.y-${pattern === 'anthro-chest' ? '0.49' : '0.40'})/0.18,2.0))
+          * exp(-pow(vPetLocal.x/0.30,2.0)) * smoothstep(0.05,0.27,vPetLocal.z);
+        diffuseColor.rgb *= 1.0 - neckAO * 0.20;
+      ` : ''}
       ${pattern === 'face' ? 'diffuseColor.rgb = mix(diffuseColor.rgb,uBlushColor,blush*uBlushStrength);' : ''}
       ${material instanceof THREE.MeshToonMaterial ? '' : `diffuseColor.rgb *= mix(0.86,1.0,smoothstep(0.0,0.39,vPetLocal.z));`}
     `,

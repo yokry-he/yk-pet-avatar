@@ -2,17 +2,17 @@
 import * as THREE from 'three'
 
 /** A closed, smooth pear/head surface, sculpted from a UV cage. */
-export function sculptedForm(kind: 'head' | 'body' | 'limb' | 'foot', detail = 40): THREE.BufferGeometry {
+export function sculptedForm(kind: 'head' | 'anthro-head' | 'body' | 'limb' | 'foot', detail = 40, fluffy = false): THREE.BufferGeometry {
   const geometry = new THREE.SphereGeometry(1, detail, Math.round(detail * 0.75))
   const p = geometry.getAttribute('position')
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i),
       y = p.getY(i),
       z = p.getZ(i)
-    if (kind === 'head') {
+    if (kind === 'head' || kind === 'anthro-head') {
       const cheek = Math.exp(-(((y + 0.36) / 0.24) ** 2))
-      const px = x * (0.6 + cheek * 0.095),
-        py = y * 0.51
+      const px = x * (kind === 'anthro-head' ? 0.64 + cheek * 0.045 : 0.6 + cheek * 0.095),
+        py = y * (kind === 'anthro-head' ? (y < 0 ? 0.45 : 0.54) : 0.51)
       const muzzle =
         z > 0 ? 0.13 * Math.exp(-((px / 0.3) ** 2) - ((py + 0.22) / 0.19) ** 2) * Math.min(1, z * 4) : 0
       const fluff =
@@ -20,7 +20,12 @@ export function sculptedForm(kind: 'head' | 'body' | 'limb' | 'foot', detail = 4
           0.105 * Math.exp(-(((py + 0.245) / 0.020) ** 2)) +
           0.10 * Math.exp(-(((py + 0.32) / 0.020) ** 2))) *
         Math.abs(x) ** 4
-      p.setXYZ(i, px + Math.sign(x) * fluff, py, z * (0.405 + cheek * 0.018) + muzzle)
+      const puffs = kind === 'anthro-head' ? (0.085 * Math.exp(-(((py + 0.11) / 0.045) ** 2)) + 0.080 * Math.exp(-(((py + 0.22) / 0.045) ** 2))) * Math.abs(x) ** 6 : fluff
+      // Broad overlapping lobes read as wool puffs instead of sharp horizontal points.
+      const feltPuffs = (0.095 * Math.exp(-(((py + 0.075) / 0.075) ** 2)) +
+        0.12 * Math.exp(-(((py + 0.195) / 0.075) ** 2)) +
+        0.07 * Math.exp(-(((py + 0.305) / 0.065) ** 2))) * Math.abs(x) ** 5
+      p.setXYZ(i, px + Math.sign(x) * (fluffy ? feltPuffs : puffs), py, z * (0.405 + cheek * 0.018) + muzzle)
     } else if (kind === 'body') {
       const pear = 1 - y * 0.23
       p.setXYZ(i, x * 0.355 * pear, y * 0.48, z * 0.3 * pear)
@@ -96,7 +101,7 @@ export function pillowSurface(
 }
 
 /** One full, curved tail with a gently swept, continuous cream-tip boundary. */
-export function sweptTail(thin = false, detail = 48): THREE.BufferGeometry {
+export function sweptTail(thin = false, detail = 48, plump = false): THREE.BufferGeometry {
   const curve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, 0, 0),
     new THREE.Vector3(0.29, 0.03, -0.1),
@@ -127,7 +132,7 @@ export function sweptTail(thin = false, detail = 48): THREE.BufferGeometry {
         binormal = frames.binormals[frame]!.clone().lerp(frames.binormals[frame + 1]!, fraction).normalize()
       const radius = thin
         ? 0.048 * Math.sin(Math.PI * (0.1 + t * 0.9))
-        : 0.038 * (1 - t) + 0.245 * Math.sin(Math.PI * t) ** 0.78
+        : 0.038 * (1 - t) + (plump ? 0.31 : 0.245) * Math.sin(Math.PI * t) ** (plump ? 0.6 : 0.78)
       const v = center
         .clone()
         .addScaledVector(normal, Math.cos(a) * Math.max(0.001, radius))
@@ -177,4 +182,46 @@ export function visualBounds(object: THREE.Object3D): THREE.Box3 {
     box.union(mesh.geometry.boundingBox!.clone().applyMatrix4(mesh.matrixWorld))
   })
   return box
+}
+
+/** Chibi anatomy: broad shoulders, a soft waist, a rounded hip and a thumb in the mitten contour. */
+export function anthroForm(kind: 'torso' | 'hand' | 'boot' | 'ruff', detail = 40): THREE.BufferGeometry {
+  const geometry = new THREE.SphereGeometry(1, detail, Math.round(detail * 0.75))
+  const p = geometry.getAttribute('position')
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i)
+    if (kind === 'torso') {
+      const waist = 1 - y * 0.22
+      const shoulder = 1 + 0.025 * Math.exp(-(((y - 0.58) / 0.28) ** 2))
+      p.setXYZ(i, x * 0.55 * waist * shoulder, y * 0.65, z * 0.40 * waist)
+    } else if (kind === 'hand') {
+      const thumb = 0.055 * Math.exp(-(((y - 0.22) / 0.35) ** 2)) * Math.max(0, -x) ** 3
+      p.setXYZ(i, x * 0.155 - thumb * 0.4, y * 0.175, z * 0.115)
+    } else if (kind === 'boot') {
+      // Slightly flattened sole, broad toes projecting in +Z, small ankle at the back.
+      p.setXYZ(i, x * 0.18 * (1 + z * 0.10), Math.max(-0.105, y * 0.12), z * 0.225 + 0.065)
+    } else {
+      const scallop = 1 + 0.055 * Math.cos(Math.atan2(z, x) * 9)
+      p.setXYZ(i, x * 0.285 * scallop, y * 0.085 - Math.max(0, z) * 0.045, z * 0.24 * scallop)
+    }
+  }
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/** One continuous sleeve across the joint, ready for two-bone deformation. */
+export function limbSleeve(upper: number, lower: number, root: number, joint: number, end: number, detail = 28): THREE.BufferGeometry {
+  const length = upper + lower
+  const profile = [
+    [-length - end * 0.60, 0], [-length - end * 0.35, end * 0.72],
+    [-length, end], [-upper - lower * 0.55, end * 0.4 + joint * 0.6],
+    [-upper, joint], [-upper * 0.55, root * 1.04],
+    [0, root * 0.94], [root * 0.45, root * 0.65], [root * 0.60, 0],
+  ]
+  const curve = new THREE.SplineCurve(profile.map(([y, radius]) => new THREE.Vector2(radius, y)))
+  const points = Array.from({ length: 49 }, (_, i) => {
+    const p = curve.getPoint(i / 48)
+    return new THREE.Vector2(Math.max(0, p.x), p.y)
+  })
+  return new THREE.LatheGeometry(points, detail)
 }
