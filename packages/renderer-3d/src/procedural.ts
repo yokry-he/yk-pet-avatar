@@ -475,6 +475,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
     }
     anthro = createAnthroRig(add, anthroBodyMat, mat('body'), creamMat, beanMat, clothMat, ink, style.id, tier === 'low' ? 24 : 40)
     hips.add(anthro.group)
+    if (style.id === 'plush') anthro.emblem.position.z = 0.055
     anthro.torsoMesh.traverse((node) => {
       const mesh = node as THREE.Mesh
       const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
@@ -717,7 +718,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
         : emotion === 'surprised' ? expression.eyeOpen * 0.90
         : Math.max(0.045, expression.eyeOpen)
       for (const eye of [eyeL, eyeR]) {
-        eye.group.position.z = 0.363 * snoutDepth
+        eye.group.position.z = (style.id === 'plush' ? 0.385 : 0.363) * snoutDepth
         const dot = parts.eyes === 'dot' ? 0.65 : 1,
           almond = parts.eyes === 'almond' ? 0.82 : 1
         const eyeSize = props.eyeScale / style.shape.eye
@@ -980,7 +981,8 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   }
   const iris = material('#86502c', felt ? 0.16 : 0.12)
   if (felt) {
-    iris.clearcoat = 1
+    iris.clearcoat = 0.55
+    iris.specularIntensity = 0.35
     iris.clearcoatRoughness = 0.1
     iris.ior = 1.46
     // Pigment sits below the convex specular surface; the lower iris catches more light.
@@ -1008,7 +1010,7 @@ function makeEye(head: THREE.Group, side: number, style: StylePreset, materials:
   irisMesh.position.x = 0.01
   gaze.add(irisMesh)
   const pupilMaterial = material('#130f13', felt ? 0.07 : 0.1)
-  if (felt) { pupilMaterial.clearcoat = 1; pupilMaterial.clearcoatRoughness = 0.1 }
+  if (felt) { pupilMaterial.clearcoat = 0.4; pupilMaterial.clearcoatRoughness = 0.18; pupilMaterial.specularIntensity = 0.25 }
   const pupil = lens(0.097, 0.121, 0.026, pupilMaterial, 0.078)
   pupil.position.y = 0.022
   gaze.add(pupil)
@@ -1247,15 +1249,16 @@ function surfaceFinish(
         color: '#ffffff',
         vertexColors: original instanceof THREE.MeshStandardMaterial && original.vertexColors,
         roughness: 1,
+        envMapIntensity: 0.12,
         alphaTest: 0.025,
         transparent: true,
         opacity: 0.62 * (1 - 0.72 * i / layers),
         depthWrite: false,
       })
       m.userData.fixedColor = original.userData.fixedColor
-      const groom = /tuft|curl|inner-ear/.test(source.name) ? 0.45 : /mitten|boot|foot/.test(source.name) ? 0.5 : 1
+      const groom = /mitten|front-paw|hind-foot/.test(source.name) ? 0.10 : /tuft|curl|inner-ear/.test(source.name) ? 0.24 : /boot|foot/.test(source.name) ? 0.4 : 1
       inflate(m, style.material.furLength * (i / layers) ** 0.85 * groom)
-      feltSurface(m, noise!, i / layers)
+      feltSurface(m, noise!, i / layers, source.name === 'mesh-head')
       materials.add(m)
       tints.push({ material: m, slot: tint?.slot ?? 'body' })
       return m
@@ -1271,14 +1274,21 @@ function surfaceFinish(
 
 /** Correlated strand masks across shells form a tapered coat, including the silhouette.
  * The base has fine wool grain; velvet grazing light needs no render targets or passes. */
-function feltSurface(material: THREE.MeshStandardMaterial, grain: THREE.Texture, height: number): void {
+function feltSurface(material: THREE.MeshStandardMaterial, grain: THREE.Texture, height: number, face = false): void {
   material.userData.felt = true
   const before = material.onBeforeCompile.bind(material), key = material.customProgramCacheKey()
   material.onBeforeCompile = (shader, renderer) => {
     before(shader, renderer)
     shader.uniforms.uFeltGrain = { value: grain }
     shader.vertexShader = 'varying vec2 vFeltUV; varying vec3 vFeltPosition;\n' + shader.vertexShader.replace(
-      '#include <begin_vertex>', '#include <begin_vertex>\nvFeltUV = uv * vec2(3.0,2.0); vFeltPosition = position;',
+      '#include <begin_vertex>', `#include <begin_vertex>
+        vFeltUV = uv * vec2(3.0,2.0); vFeltPosition = position;
+        ${face ? `
+          // Close-cropped facial wool keeps the inset eyes, brows and mouth unobstructed.
+          float faceGroom = smoothstep(0.18,0.32,position.z) * (1.0-smoothstep(0.42,0.59,abs(position.x)));
+          transformed -= normalize(normal) * uGrow * faceGroom * 0.94;
+        ` : ''}
+      `,
     )
     shader.fragmentShader = 'uniform sampler2D uFeltGrain; varying vec2 vFeltUV; varying vec3 vFeltPosition;\n' + shader.fragmentShader.replace(
       '#include <color_fragment>', `#include <color_fragment>
@@ -1289,11 +1299,11 @@ function feltSurface(material: THREE.MeshStandardMaterial, grain: THREE.Texture,
       `,
     ).replace('#include <opaque_fragment>', `
       float woolRim = pow(1.0-abs(dot(normal,normalize(vViewPosition))),2.4);
-      outgoingLight += diffuseColor.rgb * woolRim * ${height > 0 ? '0.28' : '0.13'};
+      outgoingLight += diffuseColor.rgb * woolRim * ${height > 0 ? '0.16' : '0.10'};
       #include <opaque_fragment>
     `)
   }
-  material.customProgramCacheKey = () => `${key}:felt-v1:${height.toFixed(4)}`
+  material.customProgramCacheKey = () => `${key}:felt-v2:${height.toFixed(4)}:${face}`
 }
 
 function materialFor(

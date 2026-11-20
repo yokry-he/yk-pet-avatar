@@ -297,3 +297,29 @@ describe('procedural rig and materials', () => {
     }
   })
 })
+
+describe('felt coat composition', () => {
+  it.each(['low', 'medium', 'high'] as const)('keeps %s coat inflation, strand masks, and facial pigments in one shader', tier => {
+    const pet = createProceduralPet({ ...state('plush'), appearance: { ...state('plush').appearance!, pose: 'anthro' } }, tier)
+    const head = pet.group.getObjectByName('mesh-head') as THREE.Mesh
+    const shell = head.getObjectByName('fur-shell-1') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
+    const shader = {
+      uniforms: {},
+      vertexShader: THREE.ShaderLib.standard.vertexShader,
+      fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+    }
+    shell.material.onBeforeCompile(shader as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer)
+    expect(shader.uniforms).toHaveProperty('uGrow')
+    expect(shader.uniforms).toHaveProperty('uFeltGrain')
+    expect(shader.uniforms).toHaveProperty('uFaceBody')
+    expect(shader.vertexShader).toContain('faceGroom')
+    expect(shader.fragmentShader).toContain('woolGrain')
+    expect(shader.fragmentShader).toContain('woolRim')
+    expect(shell.material.depthWrite).toBe(false)
+    expect(shell.geometry).toBe(head.geometry)
+    if (tier === 'low') expect(head.children.filter(node => node.name.startsWith('fur-shell-'))).toHaveLength(1)
+    if (tier === 'medium') expect(head.getObjectByName('fur-shell-4')).toBeDefined()
+    if (tier === 'high') expect(head.getObjectByName('fur-shell-9')).toBeDefined()
+    pet.dispose()
+  })
+})
