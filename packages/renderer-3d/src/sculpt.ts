@@ -178,3 +178,45 @@ export function visualBounds(object: THREE.Object3D): THREE.Box3 {
   })
   return box
 }
+
+/** Chibi anatomy: broad shoulders, a soft waist, a rounded hip and a thumb in the mitten contour. */
+export function anthroForm(kind: 'torso' | 'hand' | 'boot' | 'ruff', detail = 40): THREE.BufferGeometry {
+  const geometry = new THREE.SphereGeometry(1, detail, Math.round(detail * 0.75))
+  const p = geometry.getAttribute('position')
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i)
+    if (kind === 'torso') {
+      const waist = 1 - 0.13 * Math.exp(-((y / 0.35) ** 2))
+      const shoulder = 1 + 0.18 * Math.exp(-(((y - 0.58) / 0.28) ** 2))
+      p.setXYZ(i, x * 0.30 * waist * shoulder, y * 0.43, z * 0.225 * waist)
+    } else if (kind === 'hand') {
+      const thumb = 0.045 * Math.exp(-(((y - 0.22) / 0.35) ** 2)) * Math.max(0, -x) ** 3
+      p.setXYZ(i, x * 0.108 - thumb, y * 0.13, z * 0.085)
+    } else if (kind === 'boot') {
+      // Slightly flattened sole, broad toes projecting in +Z, small ankle at the back.
+      p.setXYZ(i, x * 0.14 * (1 + z * 0.10), Math.max(-0.092, y * 0.105), z * 0.205 + 0.055)
+    } else {
+      const scallop = 1 + 0.055 * Math.cos(Math.atan2(z, x) * 9)
+      p.setXYZ(i, x * 0.275 * scallop, y * 0.105 - Math.max(0, z) * 0.045, z * 0.22 * scallop)
+    }
+  }
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/** One continuous sleeve across the joint, ready for two-bone deformation. */
+export function limbSleeve(upper: number, lower: number, root: number, joint: number, end: number, detail = 28): THREE.BufferGeometry {
+  const length = upper + lower
+  const profile = [
+    [-length - end * 0.60, 0], [-length - end * 0.35, end * 0.72],
+    [-length, end], [-upper - lower * 0.55, end * 0.4 + joint * 0.6],
+    [-upper, joint], [-upper * 0.55, root * 1.04],
+    [0, root * 0.94], [root * 0.45, root * 0.65], [root * 0.60, 0],
+  ]
+  const curve = new THREE.SplineCurve(profile.map(([y, radius]) => new THREE.Vector2(radius, y)))
+  const points = Array.from({ length: 49 }, (_, i) => {
+    const p = curve.getPoint(i / 48)
+    return new THREE.Vector2(Math.max(0, p.x), p.y)
+  })
+  return new THREE.LatheGeometry(points, detail)
+}
