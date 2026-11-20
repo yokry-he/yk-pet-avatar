@@ -3,9 +3,11 @@ import type { PetAction } from '@yk-pet/core'
 
 export type Point = readonly [number, number, number]
 export interface Chain { root: Point; joint: Point; end: Point }
-export const ARM_LENGTHS = [0.29, 0.27] as const
-export const LEG_LENGTHS = [0.34, 0.32] as const
+export const ARM_LENGTHS = [0.27, 0.245] as const
+export const LEG_LENGTHS = [0.25, 0.25] as const
 export const GESTURE_DURATION = 0.4
+// Anthro-only landmarks, measured from the planted sole; sit/stand keep their own rig.
+export const ANTHRO = { torsoY: 0.94, neckY: 1.28, shoulderY: 1.16, hipY: 0.64, ankleY: 0.155, footX: 0.22, tailY: 0.54 } as const
 const clamp = (n: number, min = 0, max = 1) => Math.max(min, Math.min(max, n))
 const add = (a: Point, b: Point): Point => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 const sub = (a: Point, b: Point): Point => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -14,6 +16,11 @@ const dot = (a: Point, b: Point) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const length = (a: Point) => Math.hypot(...a)
 const unit = (a: Point): Point => mul(a, 1 / Math.max(1e-9, length(a)))
 const mix = (a: Point, b: Point, t: number): Point => add(a, mul(sub(b, a), t))
+
+/** Normalize the style defaults; the caller applies this gain before the user's own proportions. */
+export function anthroHeadGain(styleHead: number, styleBody: number): number {
+  return clamp(styleHead * 1.12, styleBody * 1.12, styleBody * 1.36) / styleHead
+}
 
 /** Pole is a direction toward the elbow/knee. Clamp unreachable targets without stretching bones. */
 export function solveLimb(root: Point, target: Point, pole: Point, upper: number, lower: number): Chain {
@@ -60,28 +67,28 @@ export function advanceGesture(previous: GestureBlend, action: PetAction, dt: nu
 export function anthroPose(time: number, gesture: readonly number[], reduced = false, headToBody = 1) {
   const t = reduced ? 0 : time
   const wave = gesture[0] ?? 0, proud = gesture[1] ?? 0, think = gesture[2] ?? 0
-  const shift = -0.018 + (reduced ? 0 : Math.sin(t * 1.15) * 0.009)
-  const hipRoll = -0.035, shoulderRoll = 0.035
+  const shift = -0.012 + (reduced ? 0 : Math.sin(t * 1.15) * 0.006)
+  const hipRoll = -0.025, shoulderRoll = 0.025
   const breath = reduced ? 0 : Math.sin(t * 2) * 0.006
   const cheekClearance = Math.max(0, headToBody - 1)
   const arms = [-1, 1].map((side) => {
-    const root: Point = [side * 0.305 + shift, 1.455 + side * 0.012 + breath, 0]
-    const idle: Point = [side * 0.425 + shift, 0.965 + breath, 0.085 + Math.sin(t * 1.5 + side) * (reduced ? 0 : 0.018)]
+    const root: Point = [side * (0.32 + (side === 1 ? wave * 0.025 : 0)) + shift, ANTHRO.shoulderY + side * 0.008 + breath + (side === 1 ? wave * 0.10 : 0), 0]
+    const idle: Point = [side * 0.425 + shift, 0.755 + breath, 0.14 + Math.sin(t * 1.5 + side) * (reduced ? 0 : 0.018)]
     // Keep elbows outside the waist and palms resting on the front of each hip.
-    let wrist = mix(idle, [side * 0.292 + shift, 1.025, 0.245], proud)
+    let wrist = mix(idle, [side * 0.32 + shift, 0.84, 0.245], proud)
     if (side === 1) {
-      wrist = mix(wrist, [0.675 + cheekClearance * 0.30 + Math.sin(t * 7) * (reduced ? 0 : 0.025), 1.815 - cheekClearance * 0.25, 0.16], wave)
-      wrist = mix(wrist, [0.22, 1.53, 0.40], think)
+      wrist = mix(wrist, [0.69 + cheekClearance * 0.24 + Math.sin(t * 7) * (reduced ? 0 : 0.025), 1.52 - cheekClearance * 0.18, 0.16], wave)
+      wrist = mix(wrist, [0.22, 1.24, 0.36], think)
     }
     return {
-      ...solveLimb(root, wrist, [side, -0.12, -0.12], ...ARM_LENGTHS),
+      ...solveLimb(root, wrist, mix([side * 0.24, -0.12, 0.65], [side, -0.12, -0.12], Math.max(proud, wave)), ...ARM_LENGTHS),
       handRoll: side === 1 ? wave * (2.75 + (reduced ? 0 : Math.sin(t * 8) * 0.24)) : 0,
       handPitch: -proud * 0.32,
     }
   })
   const legs = [-1, 1].map((side) => solveLimb(
-    [side * 0.16 + shift, 0.785 + side * Math.sin(hipRoll) * 0.16, -0.015],
-    [side * 0.192, 0.145, side === 1 ? 0.025 : 0.005],
+    [side * 0.18 + shift, ANTHRO.hipY + side * Math.sin(hipRoll) * 0.18, -0.015],
+    [side * ANTHRO.footX, ANTHRO.ankleY, side === 1 ? 0.025 : 0.005],
     [side * 0.12, 0, side === 1 ? 1 : 0.45],
     ...LEG_LENGTHS,
   ))

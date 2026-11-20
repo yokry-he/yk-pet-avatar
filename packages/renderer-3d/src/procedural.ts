@@ -20,7 +20,7 @@ import {
 } from '@yk-pet/core'
 import * as THREE from 'three'
 import { advancePose, initialPose, interpolateRig } from './pose'
-import { advanceGesture, anthroPose, initialGesture } from './anthro'
+import { ANTHRO, advanceGesture, anthroHeadGain, anthroPose, initialGesture } from './anthro'
 import { createAnthroRig } from './anthro-rig'
 import { earSurface, pillowSurface, sculptedForm, sweptTail } from './sculpt'
 
@@ -39,6 +39,8 @@ export interface ProceduralPet {
 
 export function createProceduralPet(state: PetVisualState, tier: QualityTier): ProceduralPet {
   const style = getStyle(state.style)
+  const anthroDefaults = styledProportions(DEFAULT_PROPORTIONS, style)
+  const headGain = anthroHeadGain(anthroDefaults.headScale, anthroDefaults.bodyScale)
   const deviceTier = qualityFromState({ behavior: 'idle', quality: 'auto' })
   const glowTier = tier === 'low' || deviceTier === 'low'
     ? 'low'
@@ -434,7 +436,7 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       const list = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
       for (const m of list)
         if (!(m instanceof THREE.MeshBasicMaterial) && !(m instanceof THREE.ShaderMaterial))
-          paintMarkings(m, faceBody, faceCream, 'chest', faceBlush, blushStrength)
+          paintMarkings(m, faceBody, faceCream, 'anthro-chest', faceBlush, blushStrength)
     })
     // An explicitly configured scarf replaces the small style outfit hint.
     anthro.collar.visible = !(state.appearance?.accessories ?? []).some((item) =>
@@ -742,15 +744,17 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
       if (a > 0) {
         const anthroRig = ensureAnthro()
         const bodyScale = props.bodyScale, heightScale = props.bodyScale * props.bodyLength
-        const humanoidPose = anthroPose(time, gesture.value, reduced, props.headScale / bodyScale)
+        const anthroHeadScale = props.headScale * headGain
+        const humanoidPose = anthroPose(time, gesture.value, reduced, anthroHeadScale / bodyScale)
         anthroRig.update(humanoidPose, gesture.value[0] ?? 0)
         anthroRig.group.scale.set(bodyScale, heightScale, bodyScale)
-        head.position.y = THREE.MathUtils.lerp(head.position.y, (1.60 + humanoidPose.breath) * heightScale + 0.46 * props.headScale, a)
+        head.position.y = THREE.MathUtils.lerp(head.position.y, (ANTHRO.neckY + humanoidPose.breath) * heightScale + 0.46 * anthroHeadScale, a)
+        head.scale.setScalar(THREE.MathUtils.lerp(props.headScale, anthroHeadScale, a))
         head.position.x = humanoidPose.shift * bodyScale * a
         head.rotation.z += 0.025 * a
         hips.position.y *= 1 - a
         hips.rotation.x *= 1 - a
-        tail.position.y = THREE.MathUtils.lerp(rig.tailY, 0.78 * heightScale, a)
+        tail.position.y = THREE.MathUtils.lerp(rig.tailY, ANTHRO.tailY * heightScale, a)
         tail.position.z = THREE.MathUtils.lerp(rig.tailZ, -0.25 * bodyScale, a)
         tail.rotation.z += -0.10 * a
         // Configured accessories keep their sockets on the new anatomy.
@@ -764,12 +768,12 @@ export function createProceduralPet(state: PetVisualState, tier: QualityTier): P
               item.position.set(wrist[0] * bodyScale, wrist[1] * heightScale - 0.06, wrist[2] * bodyScale + 0.10)
             } else if (id === 'head' || id === 'ear-l' || id === 'ear-r' || id === 'face' || id === 'muzzle') {
               const base = item.userData.socketBase as THREE.Vector3
-              item.position.set(base.x * props.headScale + head.position.x,
-                head.position.y + (id === 'head' ? 0.62 : id.startsWith('ear-') ? 0.5 : id === 'face' ? 0.05 : -0.15) * props.headScale,
-                id === 'face' || id === 'muzzle' ? 0.58 * props.headScale : base.z)
+              item.position.set(base.x * anthroHeadScale + head.position.x,
+                head.position.y + (id === 'head' ? 0.62 : id.startsWith('ear-') ? 0.5 : id === 'face' ? 0.05 : -0.15) * anthroHeadScale,
+                id === 'face' || id === 'muzzle' ? 0.58 * anthroHeadScale : base.z)
             } else {
               const base = item.userData.socketBase as THREE.Vector3
-              item.position.set((id === 'neck' && anthroRig.collar.visible ? base.x + 0.22 : base.x) * bodyScale, (id === 'neck' ? 1.57 : id === 'tail' ? 0.80 : 1.27) * heightScale,
+              item.position.set((id === 'neck' && anthroRig.collar.visible ? base.x + 0.22 : base.x) * bodyScale, (id === 'neck' ? ANTHRO.neckY - 0.02 : id === 'tail' ? ANTHRO.tailY : ANTHRO.torsoY) * heightScale,
                 id === 'neck' ? 0.14 * bodyScale : base.z * bodyScale)
             }
           }
@@ -1225,7 +1229,7 @@ function paintMarkings(
   material: THREE.Material,
   body: THREE.Color,
   cream: THREE.Color,
-  pattern: 'face' | 'chest',
+  pattern: 'face' | 'chest' | 'anthro-chest',
   blush: THREE.Color,
   blushStrength: { value: number },
 ): void {
@@ -1255,7 +1259,10 @@ function paintMarkings(
         float chin = length(vec2(vPetLocal.x / 0.34, (vPetLocal.y+0.40) / 0.11));
         float mask = (1.0-smoothstep(0.98,1.02,min(snout,min(cheek,chin)))) * smoothstep(-0.12,0.06,vPetLocal.z);
       `
-          : `
+          : pattern === 'anthro-chest' ? `
+        float belly = length(vec2(vPetLocal.x / 0.25, (vPetLocal.y + 0.015) / 0.325));
+        float mask = (1.0-smoothstep(0.97,1.01,belly)) * smoothstep(0.10,0.20,vPetLocal.z);
+      ` : `
         float height = clamp((vPetLocal.y+0.29)/0.64,0.0,1.0);
         float width = 0.235 * pow(height,0.63);
         float mask = (1.0-smoothstep(width-0.003,width+0.003,abs(vPetLocal.x))) * smoothstep(-0.30,-0.28,vPetLocal.y) * smoothstep(0.10,0.22,vPetLocal.z);

@@ -186,18 +186,18 @@ export function anthroForm(kind: 'torso' | 'hand' | 'boot' | 'ruff', detail = 40
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), y = p.getY(i), z = p.getZ(i)
     if (kind === 'torso') {
-      const waist = 1 - 0.13 * Math.exp(-((y / 0.35) ** 2))
-      const shoulder = 1 + 0.18 * Math.exp(-(((y - 0.58) / 0.28) ** 2))
-      p.setXYZ(i, x * 0.30 * waist * shoulder, y * 0.43, z * 0.225 * waist)
+      const waist = 1 - 0.045 * Math.exp(-((y / 0.35) ** 2))
+      const shoulder = 1 + 0.10 * Math.exp(-(((y - 0.58) / 0.28) ** 2))
+      p.setXYZ(i, x * 0.34 * waist * shoulder, y * 0.35, z * 0.265 * waist)
     } else if (kind === 'hand') {
-      const thumb = 0.045 * Math.exp(-(((y - 0.22) / 0.35) ** 2)) * Math.max(0, -x) ** 3
-      p.setXYZ(i, x * 0.108 - thumb, y * 0.13, z * 0.085)
+      const thumb = 0.055 * Math.exp(-(((y - 0.22) / 0.35) ** 2)) * Math.max(0, -x) ** 3
+      p.setXYZ(i, x * 0.14 - thumb, y * 0.145, z * 0.105)
     } else if (kind === 'boot') {
       // Slightly flattened sole, broad toes projecting in +Z, small ankle at the back.
-      p.setXYZ(i, x * 0.14 * (1 + z * 0.10), Math.max(-0.092, y * 0.105), z * 0.205 + 0.055)
+      p.setXYZ(i, x * 0.18 * (1 + z * 0.10), Math.max(-0.105, y * 0.12), z * 0.225 + 0.065)
     } else {
       const scallop = 1 + 0.055 * Math.cos(Math.atan2(z, x) * 9)
-      p.setXYZ(i, x * 0.275 * scallop, y * 0.105 - Math.max(0, z) * 0.045, z * 0.22 * scallop)
+      p.setXYZ(i, x * 0.285 * scallop, y * 0.085 - Math.max(0, z) * 0.045, z * 0.24 * scallop)
     }
   }
   geometry.computeVertexNormals()

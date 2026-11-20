@@ -1,6 +1,6 @@
 /** Articulated anthro body. Every surface goes through the renderer's existing style finish. */
 import * as THREE from 'three'
-import { anthroPose, ARM_LENGTHS, LEG_LENGTHS, type Chain, type Point } from './anthro'
+import { ANTHRO, anthroPose, ARM_LENGTHS, LEG_LENGTHS, type Chain, type Point } from './anthro'
 import { anthroForm, limbSleeve, pillowSurface } from './sculpt'
 
 type AddSurface = (
@@ -26,35 +26,43 @@ export function createAnthroRig(
   group.add(torso)
   const torsoMesh = add(torso, anthroForm('torso', detail), torsoMaterial, 'mesh-anthro-torso')
   const ruff = add(torso, anthroForm('ruff', detail), cream, 'mesh-neck-ruff')
-  ruff.position.set(0, 0.405, -0.035)
+  ruff.position.set(0, 0.31, -0.015)
   const collar = new THREE.Group()
   collar.name = 'anthro-collar'
   torso.add(collar)
-  const band = add(collar, new THREE.TorusGeometry(0.205, style === 'glass' ? 0.013 : 0.037, 10, 40), cloth, 'mesh-anthro-collar')
+  const band = add(collar, new THREE.TorusGeometry(0.225, style === 'glass' ? 0.013 : 0.037, 10, 40), cloth, 'mesh-anthro-collar')
   band.rotation.x = Math.PI / 2
   band.scale.y = 0.84
-  collar.position.y = 0.395
+  collar.position.y = 0.30
   if (style !== 'glass') {
+    const scarfDepth = (x: number, y: number, r: number) => {
+      const chestSurface = 0.265 * Math.sqrt(Math.max(0, 1 - (x / 0.34) ** 2 - ((0.30 + y) / 0.35) ** 2))
+      return Math.max(chestSurface + 0.012, 0.245 + 0.02 * (1 - r * r))
+    }
     const bib = add(collar, pillowSurface(
       style === 'plush'
         ? [[-0.08, 0.005], [0.075, 0.005], [0.09, -0.27], [-0.065, -0.29]]
         : [[-0.22, 0.005], [0, -0.025], [0.22, 0.005], [0.14, -0.105], [0, -0.23], [-0.14, -0.105]],
-      (_x, _y, r) => 0.30 + 0.025 * (1 - r * r), 8,
+      scarfDepth, 8,
     ), cloth, 'mesh-anthro-scarf')
     if (style === 'plush') {
       // Small knit ribs and blanket stitches, kept on the scarf's visible face.
       for (let i = 0; i < 7; i++) {
         const x = -0.055 + i * 0.019
-        const seam = line([[x, -0.035, 0.328], [x + 0.005, -0.14, 0.331], [x, -0.25, 0.320]], 0.0025, cream)
+        const stitches = [[x, -0.035], [x + 0.005, -0.14], [x, -0.25]].map(([sx, sy]) => {
+          const r = Math.min(1, Math.hypot(sx! / 0.08, (sy! + 0.14) / 0.145))
+          return [sx!, sy!, scarfDepth(sx!, sy!, r) + 0.003]
+        })
+        const seam = line(stitches, 0.0025, cream)
         bib.add(seam)
       }
     } else {
       const knot = add(collar, anthroForm('hand', 20), cloth, 'mesh-scarf-knot')
-      knot.position.set(0.208, -0.015, 0.04)
+      knot.position.set(0.23, -0.015, 0.13)
       knot.scale.set(0.45, 0.40, 0.48)
       const ribbon = add(collar, pillowSurface(
         [[0.20, 0], [0.35, 0.045], [0.38, -0.075], [0.27, -0.055], [0.32, -0.16], [0.22, -0.11]],
-        () => 0.055, 5,
+        () => 0.13, 5,
       ), cloth, 'mesh-scarf-tails')
       ribbon.rotation.y = -0.1
     }
@@ -68,7 +76,7 @@ export function createAnthroRig(
     group.add(root)
     root.add(joint)
     joint.position.y = -lengths[0]
-    const sleeve = limbSleeve(lengths[0], lengths[1], kind === 'arm' ? 0.108 : 0.146, kind === 'arm' ? 0.087 : 0.113, kind === 'arm' ? 0.067 : 0.084, detail)
+    const sleeve = limbSleeve(lengths[0], lengths[1], kind === 'arm' ? 0.135 : 0.165, kind === 'arm' ? 0.105 : 0.125, kind === 'arm' ? 0.085 : 0.105, detail)
     add(root, sleeve, body, `mesh-anthro-${kind}`)
     const restPosition = sleeve.getAttribute('position').array.slice()
     const restNormal = sleeve.getAttribute('normal').array.slice()
@@ -79,28 +87,28 @@ export function createAnthroRig(
     else group.add(end)
     const surface = add(end, anthroForm(kind === 'arm' ? 'hand' : 'boot', detail), cream, `mesh-anthro-${kind === 'arm' ? 'mitten' : 'boot'}`)
     if (kind === 'arm') {
-      surface.position.y = -0.075
+      surface.position.y = -0.07
       surface.scale.x = side
-      for (const x of [-0.035, 0.03]) {
-        const seam = line([[x, -0.12, 0.077], [x, -0.155, 0.065], [x * 0.95, -0.18, 0.040]], 0.0025, ink)
+      for (const x of [-0.044, 0.038]) {
+        const seam = line([[x, -0.13, 0.095], [x, -0.17, 0.075], [x * 0.95, -0.20, 0.045]], 0.0025, ink)
         end.add(seam)
       }
     } else {
       surface.position.set(0, -0.04, 0.015)
-      for (const x of [-0.04, 0.04])
-        end.add(line([[x, 0.025, 0.19], [x, 0.008, 0.224], [x, -0.02, 0.254]], 0.0025, ink))
+      for (const x of [-0.055, 0.055])
+        end.add(line([[x, 0.045, 0.21], [x, 0.025, 0.255], [x, -0.015, 0.29]], 0.0025, ink))
     }
     const pads = new THREE.Group()
     pads.name = 'anthro-palm-pads'
     if (kind === 'arm') {
       end.add(pads)
       const palm = add(pads, new THREE.SphereGeometry(1, 16, 12), pink, 'mesh-anthro-palm', false)
-      palm.position.set(0, -0.07, 0.082)
-      palm.scale.set(0.045, 0.043, 0.007)
+      palm.position.set(0, -0.07, 0.104)
+      palm.scale.set(0.055, 0.048, 0.008)
       for (let i = -1; i <= 1; i++) {
         const toe = add(pads, new THREE.SphereGeometry(1, 12, 8), pink, 'mesh-anthro-finger-pad', false)
-        toe.position.set(i * 0.047, -0.137 + Math.abs(i) * 0.012, 0.067)
-        toe.scale.set(0.016, 0.019, 0.006)
+        toe.position.set(i * 0.057, -0.155 + Math.abs(i) * 0.012, 0.080)
+        toe.scale.set(0.020, 0.022, 0.007)
       }
     }
     return { root, joint, end, pads, sleeve, restPosition, restNormal, upperLength: lengths[0] }
@@ -138,7 +146,7 @@ export function createAnthroRig(
   return {
     group, torsoMesh, collar, arms,
     update(pose: ReturnType<typeof anthroPose>, wave: number) {
-      torso.position.set(pose.shift, 1.18 + pose.breath, 0)
+      torso.position.set(pose.shift, ANTHRO.torsoY + pose.breath, 0)
       torso.rotation.z = pose.shoulderRoll
       torso.scale.y = 1 + pose.breath * 0.6
       arms.forEach((rig, i) => {

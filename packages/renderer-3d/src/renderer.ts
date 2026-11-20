@@ -443,7 +443,8 @@ export class ThreePetRenderer implements PetRenderer {
     const size = box.getSize(new THREE.Vector3())
     const center = box.getCenter(new THREE.Vector3())
     const distance =
-      cameraFit(Math.hypot(size.x, size.z), size.y, this.#camera.aspect, this.#camera.fov) + size.z * 0.5
+      cameraFit(Math.hypot(size.x, size.z), size.y, this.#camera.aspect, this.#camera.fov) *
+      (1 - 0.10 * (this.#pet?.anthroBlend ?? 0)) + size.z * 0.5
     this.#camera.position.set(center.x, center.y + distance * 0.035, center.z + distance)
     this.#camera.lookAt(center)
     this.#camera.updateProjectionMatrix()

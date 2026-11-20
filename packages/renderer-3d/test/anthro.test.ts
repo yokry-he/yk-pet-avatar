@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 import { APRICOT_COLORS, DEFAULT_PROPORTIONS, SPECIES_PART_DEFAULTS, type PetVisualState } from '@yk-pet/core'
-import { advanceGesture, anthroPose, ARM_LENGTHS, GESTURE_DURATION, initialGesture, LEG_LENGTHS, solveLimb, type Point } from '../src/anthro'
+import { ANTHRO, advanceGesture, anthroHeadGain, anthroPose, ARM_LENGTHS, GESTURE_DURATION, initialGesture, LEG_LENGTHS, solveLimb, type Point } from '../src/anthro'
 import { anthroForm, limbSleeve, visualBounds } from '../src/sculpt'
 import { createProceduralPet } from '../src/procedural'
 
@@ -29,10 +29,22 @@ describe('anthro gesture envelopes', () => {
     expect(advanceGesture(middle, 'success', 0, true).value).toEqual([0, 1, 0])
     expect(advanceGesture(initialGesture(), 'wave', -1).value).toEqual([0, 0, 0])
     expect(anthroPose(0, [1, 0, 0], true)).toEqual(anthroPose(100, [1, 0, 0], true))
+    const idle = anthroPose(0, [0, 0, 0], true)
+    const proud = anthroPose(0, [0, 1, 0], true)
+    proud.arms.forEach((arm, i) => expect(Math.abs(arm.joint[0] - proud.shift)).toBeGreaterThan(Math.abs(idle.arms[i]!.joint[0] - idle.shift) + 0.05))
   })
 })
 
 describe('anthro anatomy and planted contacts', () => {
+  it('keeps style defaults in a compact chibi range', () => {
+    for (const [head, body] of [[1.10, 1.133], [1.16, 0.869], [1.04, 1.191], [1.06, 0.98]]) {
+      const gain = anthroHeadGain(head!, body!)
+      const ratio = head! * gain / body!
+      expect(ratio).toBeGreaterThanOrEqual(1.12 - 1e-10)
+      expect(ratio).toBeLessThanOrEqual(1.36 + 1e-10)
+    }
+  })
+
   it('preserves bone lengths, including unreachable and singular IK targets', () => {
     for (const target of [[0, 0, 0], [0, -0.4, 0], [8, 9, 2]] as Point[]) {
       const chain = solveLimb([0, 0, 0], target, [0, -1, 0], ...ARM_LENGTHS)
@@ -52,8 +64,8 @@ describe('anthro anatomy and planted contacts', () => {
         pose.legs.forEach((leg, i) => {
           expect(distance(leg.root, leg.joint)).toBeCloseTo(LEG_LENGTHS[0])
           expect(distance(leg.joint, leg.end)).toBeCloseTo(LEG_LENGTHS[1])
-          expect(leg.end[1]).toBeCloseTo(0.145)
-          expect(leg.end[0]).toBeCloseTo(i === 0 ? -0.192 : 0.192)
+          expect(leg.end[1]).toBeCloseTo(ANTHRO.ankleY)
+          expect(leg.end[0]).toBeCloseTo(i === 0 ? -ANTHRO.footX : ANTHRO.footX)
         })
         if (weights[1] === 1) pose.arms.forEach((arm) => {
           expect(Math.abs(arm.joint[0] - pose.shift)).toBeGreaterThan(0.4)
@@ -103,6 +115,12 @@ describe('styled anthro integration', () => {
       expect(pet.anthroBlend).toBe(1)
       const head = pet.group.getObjectByName('mesh-head')!
       const sleeve = pet.group.getObjectByName('mesh-anthro-arm')!
+      const headHeight = visualBounds(head).getSize(new THREE.Vector3()).y
+      const totalHeight = visualBounds(pet.group).max.y
+      expect(totalHeight / headHeight).toBeGreaterThan(2.1)
+      expect(totalHeight / headHeight).toBeLessThan(2.45)
+      const bodyScale = pet.group.getObjectByName('anthro-body')!.scale.y
+      expect(ANTHRO.hipY * bodyScale / headHeight).toBeLessThan(0.62)
       expect(pet.group.getObjectByName('mesh-body')!.parent!.visible).toBe(false)
       expect(pet.group.getObjectByName('anthro-body')!.visible).toBe(true)
       if (style === 'anime') expect(sleeve.getObjectByName('outline')).toBeDefined()
@@ -156,10 +174,10 @@ describe('styled anthro integration', () => {
     next.appearance!.accessories = [{ kind: 'scarf' }, { kind: 'hat' }, { kind: 'bow', socket: 'paw-r' }]
     const pet = createProceduralPet(next, 'low')
     expect(pet.group.getObjectByName('anthro-collar')!.visible).toBe(false)
-    expect(pet.group.getObjectByName('socket-neck')!.position.y).toBeCloseTo(1.57 * pet.group.getObjectByName('anthro-body')!.scale.y)
+    expect(pet.group.getObjectByName('socket-neck')!.position.y).toBeCloseTo((ANTHRO.neckY - 0.02) * pet.group.getObjectByName('anthro-body')!.scale.y)
     expect(pet.group.getObjectByName('socket-head')!.position.y).toBeGreaterThan(pet.group.getObjectByName('bone-head')!.position.y)
     pet.update({ ...next, behavior: 'wave' }, 1)
-    expect(pet.group.getObjectByName('socket-paw-r')!.position.y).toBeGreaterThan(1.7)
+    expect(pet.group.getObjectByName('socket-paw-r')!.position.y).toBeGreaterThan(1.5)
     pet.dispose()
   })
   it('drops expensive glass layers on weak devices for the new limbs too', () => {
