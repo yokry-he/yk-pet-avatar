@@ -300,6 +300,10 @@ def rotate(name,axis,angle):
     pb=rig.pose.bones[name];q=pb.bone.matrix_local.to_quaternion()
     pb.rotation_quaternion=q.inverted() @ Quaternion(axis,angle) @ q
 
+def arm_rotation(name, y_angle, forward):
+    pb=rig.pose.bones[name];q=pb.bone.matrix_local.to_quaternion()
+    pb.rotation_quaternion=q.inverted() @ (Quaternion((1,0,0),forward) @ Quaternion((0,1,0),y_angle)) @ q
+
 def shift(name,xyz):
     pb=rig.pose.bones[name]
     pb.location=pb.bone.matrix_local.to_quaternion().inverted() @ Vector(xyz)
@@ -327,13 +331,13 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         fall=math.sin(min((duration-t)/.45,1)*math.pi/2)**2
         gesture=rise*fall
         if name=='wave':
-            rotate('upper_arm.R',(0,1,0),-.32+1.98*gesture)
+            arm_rotation('upper_arm.R',-.32+1.48*gesture,.95*gesture)
             rotate('forearm.R',(0,1,0),(.28+.15*math.sin(2*ph))*gesture)
             rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.35*gesture))
+                arm_rotation('upper_arm.'+side,sign*(.32-1.55*gesture),1.0*gesture)
                 rotate('forearm.'+side,(0,1,0),-sign*.18*gesture)
             shift('root',(0,0,.035*H*gesture))
             rotate('head',(1,0,0),-.07*gesture)
@@ -363,6 +367,13 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             rotate('neck',(1,0,0),.08)
             rotate('head',(1,0,0),.24+.015*math.sin(ph))
             for side in ['L','R']:rotate('ear.'+side,(1,0,0),.15)
+        if name in ['wave','success'] and gesture>.01:
+            bpy.context.view_layer.update()
+            for side in (['R'] if name=='wave' else ['L','R']):
+                hand=rig.pose.bones['hand.'+side]
+                desired=hand.bone.matrix_local.copy()
+                desired.translation=hand.matrix.translation
+                hand.matrix=desired
         for pb in rig.pose.bones:
             pb.keyframe_insert('location',frame=frame,group=pb.name)
             pb.keyframe_insert('rotation_quaternion',frame=frame,group=pb.name)
