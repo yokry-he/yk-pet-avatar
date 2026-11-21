@@ -331,13 +331,15 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         fall=math.sin(min((duration-t)/.45,1)*math.pi/2)**2
         gesture=rise*fall
         if name=='wave':
-            arm_rotation('upper_arm.R',-.32+1.48*gesture,.95*gesture)
+            rotate('upper_arm.R',(0,1,0),-.32+1.92*gesture)
+            shift('shoulder.R',(-.055*H*gesture,-.15*H*gesture,.035*H*gesture))
             rotate('forearm.R',(0,1,0),(.28+.15*math.sin(2*ph))*gesture)
             rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                arm_rotation('upper_arm.'+side,sign*(.32-1.55*gesture),1.0*gesture)
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.05*gesture))
+                shift('shoulder.'+side,(sign*.07*H*gesture,-.15*H*gesture,.04*H*gesture))
                 rotate('forearm.'+side,(0,1,0),-sign*.18*gesture)
             shift('root',(0,0,.035*H*gesture))
             rotate('head',(1,0,0),-.07*gesture)
