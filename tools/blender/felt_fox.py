@@ -58,8 +58,10 @@ mint = material('Sage mint cloud felt', (.38, .62, .49))
 pink = material('Peach blush felt', (.92, .52, .46))
 white = material('Ivory eye whites', (.98, .92, .89), .3)
 plum = material('Deep plum glossy eyes', (.055, .019, .065), .16)
-iris = material('Plum iris', (.19, .058, .23), .23)
-pupil = material('Dark pupils', (.018, .006, .023), .12)
+iris = material('Glossy gradient plum iris', (1, 1, 1), .19)
+iris_color=iris.node_tree.nodes.new('ShaderNodeVertexColor')
+iris_color.layer_name='Iris gradient'
+iris.node_tree.links.new(iris_color.outputs['Color'],iris.node_tree.nodes.get('Principled BSDF').inputs['Base Color'])
 thread = material('Cocoa embroidered mouth', (.19, .092, .095))
 nosemat = material('Lavender nose', (.43, .27, .46), .48)
 glint = material('White eye catchlights', (1, .98, .98), .1)
@@ -67,7 +69,7 @@ bs = glint.node_tree.nodes.get('Principled BSDF')
 bs.inputs['Emission Color'].default_value = (1, .95, .95, 1)
 bs.inputs['Emission Strength'].default_value = .2
 
-# Bake a seamless fine wool tile on a UV plane. glTF receives real image maps.
+# Bake a fine wool tile on a UV plane. glTF receives real image maps.
 bpy.ops.mesh.primitive_plane_add(size=2)
 tile = bpy.context.object
 tile.name = 'Temporary bake tile'
@@ -122,7 +124,7 @@ for mat in [cream, lavender, inner, mint, pink]:
     normaltex = ns.new('ShaderNodeTexImage')
     normaltex.image = images['NORMAL']
     normal = ns.new('ShaderNodeNormalMap')
-    normal.inputs['Strength'].default_value = .48
+    normal.inputs['Strength'].default_value = .34
     ls.new(normaltex.outputs['Color'], normal.inputs['Color'])
     ls.new(normal.outputs[0], bs.inputs['Normal'])
     roughtex = ns.new('ShaderNodeTexImage')
@@ -240,7 +242,7 @@ def stitch(name, points, radius=.015, mat=thread, bone='head'):
     return finish(obj, name, mat, bone)
 
 # Pear silhouette, broad head with cheeks merged into a single sculpted surface.
-body = ball('Pear torso', (0, 0, .96), (.59, .43, .79))
+body = ball('Pear torso', (0, 0, .96), (.63, .44, .77))
 for v in body.data.vertices:
     v.co.x *= 1 - .20 * v.co.z
 headparts = [ball('Round face', (0, -.015, 2.48), (1.035, .62, .81))]
@@ -249,7 +251,8 @@ for side in [-1, 1]:
     for z, x in [(2.24, .98), (2.40, 1.02)]:
         headparts.append(sweep('Cheek flick', [(side*.72, -.03, z-.10), (side*x, -.05, z), (side*(x+.16), -.02, z+.12)], [.22, .15, .004], flat=.75))
 head = fuse('Sculpted head and cheek fluff', headparts, cream, 'head', .034)
-ball('Soft belly', (0, -.359, .92), (.43, .060, .57), cream, 'spine')
+belly=ball('Soft belly', (0, -.365, .92), (.46, .090, .60), cream)
+body=fuse('Sculpted pear torso',[body,belly],cream,None,.055)
 
 # Tall, softly rounded triangular ears; inset is a second sculpt, not a flat decal.
 for side, label in [(-1, 'R'), (1, 'L')]:
@@ -272,17 +275,23 @@ for centers, radii in [
     ([(.27,-.27,3.13),(.42,-.43,3.08),(.48,-.46,2.98)], [.18,.14,.006])]:
     sweep('Curled forehead wool', centers, radii, bone='head', flat=.65)
 
-# Eyes: recessed plum rim, ivory sclera, large dark iris, pupil and two glints.
+# Eyes: sculpted sclera and a single convex, glossy plum iris with a smooth
+# vertex-painted lower glow. No stacked pupil/iris seams or concentric outlines.
 for side in [-1, 1]:
     x = side*.43
-    eye = ball('Plum eyelid', (x, -.547, 2.52), (.298, .105, .335), thread, 'head')
-    eye.rotation_euler.y = side*-.12
-    ball('Ivory sclera', (x, -.584, 2.51), (.285, .105, .320), white, 'head')
-    ball('Glossy plum eye', (x+side*.027, -.659, 2.52), (.234, .105, .295), plum, 'head')
-    ball('Lower iris glow', (x+side*.027, -.727, 2.455), (.186, .034, .185), iris, 'head')
-    ball('Deep pupil', (x+side*.017, -.746, 2.565), (.155, .028, .201), pupil, 'head')
-    ball('Large eye sparkle', (x-.068, -.774, 2.67), (.052, .023, .056), glint, 'head', 24)
-    ball('Small eye sparkle', (x+.098, -.765, 2.42), (.019, .013, .023), glint, 'head', 20)
+    ball('Ivory sclera', (x, -.584, 2.51), (.287, .105, .303), white, 'head')
+    eye=ball('Glossy plum eye', (x+side*.032, -.660, 2.52), (.237, .112, .283), iris, 'head',48)
+    colors=eye.data.color_attributes.new(name='Iris gradient',type='FLOAT_COLOR',domain='POINT')
+    for vertex,color in zip(eye.data.vertices,colors.data):
+        z=vertex.co.z/.283
+        vx=vertex.co.x/.237
+        lower=max(0,min(1,(-z+.30)/1.3))
+        pupilshade=math.exp(-((vx/.64)**2+((z-.21)/.72)**2)*2)
+        base=(.045+.15*lower,.014+.035*lower,.054+.18*lower)
+        color.color=(*(value*(1-.68*pupilshade) for value in base),1)
+    stitch('Soft upper eyelid',[(x-.275,-.608,2.54),(x-.20,-.631,2.76),(x,-.637,2.826),(x+.20,-.631,2.76),(x+.275,-.608,2.54)],.016,thread)
+    ball('Large eye sparkle', (x-.060, -.773, 2.66), (.044, .023, .049), glint, 'head', 24)
+    ball('Small eye sparkle', (x+.100, -.768, 2.42), (.015, .012, .018), glint, 'head', 20)
     stitch('Soft eyebrow', [(x-.11,-.526,2.99),(x,-.566,3.035),(x+.10,-.53,3.005)], .018, lavender)
     ball('Warm cheek blush', (side*.66, -.552, 2.18), (.21,.018,.10), pink, 'head')
 ball('Muzzle cushion', (0, -.559, 2.13), (.32,.085,.20), cream, 'head')
@@ -417,6 +426,23 @@ for obj, rigid in parts:
             if total > 0:
                 for group in list(vert.groups):
                     obj.vertex_groups[group.group].add([vert.index],group.weight/total,'REPLACE')
+            else:
+                target='spine' if obj == body else ('tail.2' if obj == tail else 'root')
+                group=obj.vertex_groups.get(target) or obj.vertex_groups.new(name=target)
+                group.add([vert.index],1,'REPLACE')
+        if obj.name.startswith('Soft arm.'):
+            side=obj.name[-1]
+            # Give the mitten a stable palm; blend back into heat weights above
+            # the wrist so the embroidered pads stay seated on its surface.
+            for vert in obj.data.vertices:
+                z=(obj.matrix_world @ vert.co).z
+                blend=max(0,min(1,(1.08-z)/.14))
+                if blend:
+                    for membership in list(vert.groups):
+                        obj.vertex_groups[membership.group].add([vert.index],membership.weight*(1-blend),'REPLACE')
+                    group=obj.vertex_groups.get('hand.'+side) or obj.vertex_groups.new(name='hand.'+side)
+                    existing=next((g.weight for g in vert.groups if g.group == group.index),0)
+                    group.add([vert.index],existing+blend,'REPLACE')
         # Heat weights occasionally fail for small disconnected solids.
         if not obj.vertex_groups or not any(v.groups for v in obj.data.vertices):
             target = 'spine' if obj == body else ('tail.2' if obj == tail else 'root')
@@ -453,7 +479,7 @@ for name,duration in [('idle',3),('wave',3),('happy',2),('success',2)]:
             # Author its world orientation, then Blender derives local bone keys.
             bpy.context.view_layer.update()
             hand=p['hand.R']
-            desired=Matrix.Rotation(math.pi+.17*math.sin(phase*3),4,'Y') @ hand.bone.matrix_local
+            desired=Matrix.Rotation(.17*math.sin(phase*3),4,'Y') @ hand.bone.matrix_local
             desired.translation=hand.matrix.translation
             hand.matrix=desired
         elif name=='happy':
@@ -462,8 +488,16 @@ for name,duration in [('idle',3),('wave',3),('happy',2),('success',2)]:
             p['arm.L.upper'].rotation_euler[2]=-.42+.15*math.sin(phase*2)
             p['head'].rotation_euler[2]=.08*math.sin(phase)
         elif name=='success':
-            p['arm.R.upper'].rotation_euler[2]=2.65
-            p['arm.L.upper'].rotation_euler[2]=-2.65
+            for side,label in [(1,'R'),(-1,'L')]:
+                p['arm.'+label+'.upper'].rotation_euler[0]=-.35
+                p['arm.'+label+'.upper'].rotation_euler[2]=side*1.65
+                p['arm.'+label+'.lower'].rotation_euler[2]=side*.28
+            bpy.context.view_layer.update()
+            for label in ['R','L']:
+                hand=p['hand.'+label]
+                desired=hand.bone.matrix_local.copy()
+                desired.translation=hand.matrix.translation
+                hand.matrix=desired
             p['root'].location[1]=.065*(1-math.cos(phase*2))
         for pb in p:
             pb.keyframe_insert('location',frame=f,group=pb.name)

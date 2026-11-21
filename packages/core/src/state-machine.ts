@@ -16,7 +16,7 @@ export interface ActionLock {
 }
 
 export interface PlayOptions {
-  /** Freeze procedural rendering at this many seconds (use with hold for previews). */
+  /** Freeze rendering at this many seconds, including glTF clips (use with hold for previews). */
   sampleTime?: number
   reason?: LockReason
   hold?: boolean
