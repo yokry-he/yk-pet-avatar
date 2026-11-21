@@ -1,0 +1,433 @@
+"""Fit, skin, animate and optimise the owner's external fox, using Blender 4.5.
+
+Usage: blender -b --factory-startup --python tools/blender/rig_user_model.py --
+  --in /external/original.glb --out examples/models/user-fox.glb
+  --renders .art-scratch/user-rig
+
+The source is never copied or modified. Landmark proportions below are small
+anatomical priors for this upright chibi, applied to measured vertex clusters.
+Heat weights are attempted first. Since the source contains UV-split surface
+patches, skin cleanup uses continuous spatial capsule weights (identical at
+coincident seam vertices), with exclusive ear/head/tail domains. Four influences
+maximum, no geometry reduction. All nine looping actions have a readable pose
+at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
+A landmark/weight/export report and editable review blend accompany the renders.
+"""
+import argparse
+import json
+import heapq
+import math
+import sys
+from pathlib import Path
+
+import bpy
+import numpy as np
+from mathutils import Vector, Quaternion
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--in', dest='source', required=True)
+parser.add_argument('--out', required=True)
+parser.add_argument('--renders')
+opts = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
+out = Path(opts.out).resolve()
+out.parent.mkdir(parents=True, exist_ok=True)
+review = Path(opts.renders).resolve() if opts.renders else out.parent
+review.mkdir(parents=True, exist_ok=True)
+phase = Path('.art-scratch/PHASE.txt')
+
+def marker(value):
+    phase.parent.mkdir(exist_ok=True)
+    lines = phase.read_text().splitlines() if phase.exists() else []
+    if value not in lines:
+        phase.write_text('\n'.join(lines + [value]) + '\n')
+    print(value, flush=True)
+
+def active(obj):
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete(use_global=False)
+bpy.ops.import_scene.gltf(filepath=str(Path(opts.source).resolve()))
+meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+assert len(meshes) == 1, 'Expected the owner mesh, with no generated replacement'
+mesh = meshes[0]
+active(mesh)
+bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+P = np.array([v.co[:] for v in mesh.data.vertices])
+lo, hi = P.min(axis=0), P.max(axis=0)
+H = float(hi[2] - lo[2])
+z0 = float(lo[2])
+# Head and feet clusters avoid the asymmetric tail when measuring body centre.
+head_cluster = P[(P[:,2] > z0 + .56*H) & (P[:,2] < z0 + .76*H)]
+cx = float((np.quantile(head_cluster[:,0], .03) + np.quantile(head_cluster[:,0], .97)) / 2)
+head_width = float(np.quantile(head_cluster[:,0], .97)-np.quantile(head_cluster[:,0], .03))
+neck_z = z0 + .425*H
+cy = float(np.median(head_cluster[:,1])) + .045*H
+body = P[(P[:,2] > z0+.16*H)&(P[:,2]<z0+.39*H)&(abs(P[:,0]-cx)<.15*H)]
+body_y = float(np.median(body[:,1]))
+# Geodesic separation respects the fused surface: the front of the curled
+# tail is close to the left paw in space, but far away along mesh edges.
+adjacency = [[] for _ in P]
+for edge in mesh.data.edges:
+    a,b = edge.vertices
+    length = float(np.linalg.norm(P[a]-P[b]))
+    adjacency[a].append((b,length)); adjacency[b].append((a,length))
+from mathutils.kdtree import KDTree
+kd=KDTree(len(P))
+for i,p in enumerate(P):kd.insert(Vector(p),i)
+kd.balance()
+for i,p in enumerate(P):
+    for _,j,d in kd.find_range(Vector(p),.00015*H):
+        if j!=i:adjacency[i].append((j,d))
+
+def geodesic(mask):
+    dist=np.full(len(P),np.inf)
+    todo=[(0.,int(i)) for i in np.flatnonzero(mask)]
+    assert todo, 'Empty anatomical seed cluster'
+    for _,i in todo:dist[i]=0.
+    heapq.heapify(todo)
+    while todo:
+        d,i=heapq.heappop(todo)
+        if d>dist[i]:continue
+        for j,w in adjacency[i]:
+            nd=d+w
+            if nd<dist[j]:dist[j]=nd;heapq.heappush(todo,(nd,j))
+    return dist
+
+x,y,z=P.T
+arm_seeds={}
+for sign,side in [(-1,'R'),(1,'L')]:
+    arm_seeds[side]=(((x-cx)*sign>.245*H)&(z>z0+.15*H)&
+                     (z<z0+.39*H)&(y<body_y-.065*H))
+core_seed=((abs(x-cx)<.12*H)&(z<neck_z-.025*H)&(y<body_y+.04*H))
+core_seed|=((z<z0+.115*H)&(x<cx+.23*H)&(y<body_y+.08*H))
+head_seed=(z>neck_z+.10*H)&(x<cx+.35*H)&(y<body_y+.13*H)
+tail_seed=(z<neck_z+.12*H)&(x>cx+.12*H)&(y>body_y+.18*H)
+tail_seed|=(z<neck_z+.12*H)&(x>cx+.48*H)
+d_tail=geodesic(tail_seed)
+d_other=geodesic(core_seed|head_seed|arm_seeds['L']|arm_seeds['R'])
+tail_mask=d_tail<d_other
+# Tiny detached reconstruction flecks use nearest surface coordinates.
+for i in np.flatnonzero(~np.isfinite(d_tail)|~np.isfinite(d_other)):
+    candidates=kd.find_n(Vector(P[i]),40)
+    nearest=next((j for _,j,_ in candidates if np.isfinite(d_tail[j]) and np.isfinite(d_other[j])),None)
+    if nearest is not None:tail_mask[i]=tail_mask[nearest]
+d_core=geodesic(core_seed|head_seed)
+d_arms={side:geodesic(mask) for side,mask in arm_seeds.items()}
+tail_points = P[tail_mask]
+assert len(tail_points) > 250, 'No rear tail cluster detected'
+feet = P[(P[:,2]<z0+.08*H)&(P[:,1]<body_y+.08*H)]
+landmarks = {'height':H, 'body_center_x':cx, 'body_y':body_y,
+             'neck_z':neck_z, 'head_width':head_width, 'bounds':[lo.tolist(),hi.tolist()]}
+
+arm_data = bpy.data.armatures.new('OwnerFoxSkeleton')
+rig = bpy.data.objects.new('OwnerFoxRig', arm_data)
+bpy.context.collection.objects.link(rig)
+active(rig)
+bpy.ops.object.mode_set(mode='EDIT')
+rest = {}
+
+def bone(name, a, b, parent=None):
+    eb = arm_data.edit_bones.new(name)
+    eb.head, eb.tail = a, b
+    if parent: eb.parent = arm_data.edit_bones[parent]
+    eb.use_deform = True
+    eb.head_radius = .07*H
+    eb.tail_radius = .05*H
+    eb.envelope_distance = .05*H
+    rest[name] = [list(a),list(b)]
+    return eb
+
+hips_z = z0+.20*H
+bone('root',(cx,body_y,z0),(cx,body_y,z0+.08*H))
+bone('hips',(cx,body_y,hips_z),(cx,body_y,z0+.29*H),'root')
+bone('spine',(cx,body_y,z0+.29*H),(cx,body_y,z0+.36*H),'hips')
+bone('chest',(cx,body_y,z0+.36*H),(cx,body_y,neck_z),'spine')
+bone('neck',(cx,body_y,neck_z),(cx,cy,neck_z+.045*H),'chest')
+bone('head',(cx,cy,neck_z+.045*H),(cx,cy,z0+.76*H),'neck')
+# Ear tip/base positions come from the two upper side clusters.
+ear_info = {}
+for sign, side in [(-1,'R'),(1,'L')]:
+    ear = P[(P[:,2]>z0+.76*H)&((P[:,0]-cx)*sign>.13*H)]
+    top = ear[ear[:,2]>np.quantile(ear[:,2],.90)].mean(axis=0)
+    base = np.array([cx+sign*.205*H,float(np.median(ear[:,1])),z0+.77*H])
+    middle = base*.45+top*.55
+    bone('ear.'+side,base,middle,'head')
+    bone('ear.'+side+'.tip',middle,top,'ear.'+side)
+    ear_info[side] = [base.tolist(), top.tolist()]
+# Limbs are measured separately so the asymmetric baked surface is respected.
+for sign, side in [(-1,'R'),(1,'L')]:
+    arm = P[arm_seeds[side]&(~tail_mask)]
+    outer = arm[(arm[:,0]-cx)*sign>np.quantile((arm[:,0]-cx)*sign,.78)]
+    paw = outer.mean(axis=0)
+    shoulder = np.array([cx+sign*.135*H,body_y, z0+.386*H])
+    elbow = shoulder*.42+paw*.58
+    wrist = shoulder*.12+paw*.88
+    palm_end = paw+(paw-shoulder)*.10
+    bone('shoulder.'+side,(cx+sign*.07*H,body_y,z0+.38*H),shoulder,'chest')
+    bone('upper_arm.'+side,shoulder,elbow,'shoulder.'+side)
+    bone('forearm.'+side,elbow,wrist,'upper_arm.'+side)
+    bone('hand.'+side,wrist,palm_end,'forearm.'+side)
+    foot_cluster = feet[(feet[:,0]-cx)*sign>0]
+    fx = float(np.median(foot_cluster[:,0]))
+    fy = float(np.median(foot_cluster[:,1]))
+    hip = (cx+sign*.075*H,body_y,hips_z)
+    knee = (fx,body_y,z0+.105*H)
+    ankle = (fx,fy+.025*H,z0+.045*H)
+    toe = (fx,float(np.quantile(foot_cluster[:,1],.12)),z0+.025*H)
+    bone('thigh.'+side,hip,knee,'hips')
+    bone('shin.'+side,knee,ankle,'thigh.'+side)
+    bone('foot.'+side,ankle,toe,'shin.'+side)
+# A curved tail chain follows median horizontal slices, from rump to tip.
+tzlo,tzhi = np.quantile(tail_points[:,2],[.05,.97])
+tail_nodes = [np.array([cx+.10*H,body_y+.16*H,z0+.16*H])]
+for f in [.25,.54,.80,1.0]:
+    z = tzlo+(tzhi-tzlo)*f
+    sl = tail_points[abs(tail_points[:,2]-z)<.055*H]
+    pt = np.median(sl,axis=0)
+    if f==1.0:
+        pt[0] = np.quantile(sl[:,0],.8)
+    tail_nodes.append(pt)
+for i in range(4):
+    bone('tail.'+str(i+1),tail_nodes[i],tail_nodes[i+1],'hips' if i==0 else 'tail.'+str(i))
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Attempt Blender heat weighting; retain the result for diagnostics, then repair
+# domains and seams with continuous capsule weights. Source UV splits remain.
+active(mesh)
+rig.select_set(True)
+bpy.context.view_layer.objects.active=rig
+heat='automatic'
+try:
+    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+    if not all(v.groups for v in mesh.data.vertices): heat='automatic incomplete; capsule fallback'
+except RuntimeError as exc:
+    heat='automatic failed; capsule fallback: '+str(exc)
+mesh.parent=rig
+if not any(m.type=='ARMATURE' for m in mesh.modifiers):
+    mod=mesh.modifiers.new('Fox skin','ARMATURE');mod.object=rig
+for mod in mesh.modifiers:
+    if mod.type=='ARMATURE': mod.use_deform_preserve_volume=False
+mesh.vertex_groups.clear()
+groups={n:mesh.vertex_groups.new(name=n) for n in rest}
+
+def smooth(a,b,x):
+    t=max(0.,min(1.,(x-a)/(b-a)))
+    return t*t*(3-2*t)
+
+def distance(p,a,b):
+    a,b=np.array(a),np.array(b)
+    d=b-a
+    t=np.clip(np.dot(p-a,d)/max(np.dot(d,d),1e-12),0,1)
+    return float(np.linalg.norm(p-a-t*d))
+
+def capsules(p,names,soft=.035):
+    ds=[distance(p,*rest[n]) for n in names]
+    # Gaussian relative distances avoid inverse-distance spikes at joints.
+    ds=np.array(ds);w=np.exp(-(ds*ds-ds.min()**2)/(soft*H)**2)
+    return {n:float(v/w.sum()) for n,v in zip(names,w) if v>1e-6}
+
+regions={'head':0,'ears':0,'tail':0,'body':0}
+for i,p in enumerate(P):
+    x,y,z=p
+    if tail_mask[i]:
+        weights=capsules(p,['tail.1','tail.2','tail.3','tail.4'],.10)
+        regions['tail']+=1
+    elif z>neck_z+.005*H:
+        # Face, muzzle and cheek fluff stay rigid. Ear transition is above eyes.
+        sign=1 if x>cx else -1
+        side='L' if sign==1 else 'R'
+        base,top=np.array(ear_info[side])
+        outward=(x-cx)*sign
+        ear_blend=smooth(.735*H+z0,.81*H+z0,z)*smooth(.105*H,.20*H,outward)
+        if ear_blend>0:
+            weights=capsules(p,['ear.'+side,'ear.'+side+'.tip'],.065)
+            weights={n:w*ear_blend for n,w in weights.items()}
+            weights['head']=1-ear_blend
+            regions['ears']+=1
+        else: weights={'head':1};regions['head']+=1
+    else:
+        torso=capsules(p,['hips','spine','chest','neck'],.075)
+        # Smooth neck attachment below the rigid face, away from the eyes.
+        hblend=smooth(neck_z-.045*H,neck_z+.005*H,z)
+        if hblend:
+            torso={n:w*(1-hblend) for n,w in torso.items()};torso['head']=hblend
+        sign=1 if x>cx else -1;side='L' if sign==1 else 'R'
+        limb=['upper_arm.'+side,'forearm.'+side,'hand.'+side]
+        # Blend across geodesic shoulder distances, never across the spatial
+        # gap between a paw and the curled tail, and include the whole mitten.
+        delta=d_core[i]-d_arms[side][i]
+        if not math.isfinite(delta):
+            delta=(abs(x-cx)-.22*H)
+        armblend=smooth(-.065*H,.065*H,delta)
+        armblend*=1-smooth(neck_z-.055*H,neck_z+.005*H,z)
+        legblend=1-smooth(z0+.13*H,z0+.235*H,z)
+        if legblend>0:
+            legs=capsules(p,['thigh.'+side,'shin.'+side,'foot.'+side],.045)
+            torso={n:w*(1-legblend) for n,w in torso.items()}
+            for n,w in legs.items():torso[n]=torso.get(n,0)+w*legblend
+        weights={n:w*(1-armblend) for n,w in torso.items()}
+        if armblend:
+            for n,w in capsules(p,limb,.055).items():weights[n]=weights.get(n,0)+w*armblend
+        regions['body']+=1
+    weights=sorted(weights.items(),key=lambda kv:kv[1],reverse=True)[:4]
+    total=sum(w for _,w in weights)
+    for n,w in weights:
+        if w>1e-7:groups[n].add([i],w/total,'REPLACE')
+assert all(1<=len(v.groups)<=4 and abs(sum(g.weight for g in v.groups)-1)<1e-5 for v in mesh.data.vertices)
+# Seam consistency: continuous spatial weights must match at duplicate positions.
+seams={};seam_error=0.
+for v in mesh.data.vertices:
+    key=tuple(round(c,5) for c in v.co)
+    w={mesh.vertex_groups[g.group].name: g.weight for g in v.groups}
+    if key in seams:
+        old=seams[key];seam_error=max(seam_error,max(abs(w.get(n,0)-old.get(n,0)) for n in w.keys()|old.keys()))
+    else:seams[key]=w
+
+scene=bpy.context.scene
+scene.render.fps=30
+rig.animation_data_create()
+peaks={}
+
+def reset():
+    for pb in rig.pose.bones:
+        pb.rotation_mode='QUATERNION';pb.rotation_quaternion=(1,0,0,0)
+        pb.location=(0,0,0);pb.scale=(1,1,1)
+
+def rotate(name,axis,angle):
+    pb=rig.pose.bones[name];q=pb.bone.matrix_local.to_quaternion()
+    pb.rotation_quaternion=q.inverted() @ Quaternion(axis,angle) @ q
+
+def shift(name,xyz):
+    pb=rig.pose.bones[name]
+    pb.location=pb.bone.matrix_local.to_quaternion().inverted() @ Vector(xyz)
+
+# All actions close at their starting pose. Keys every .1s, including .6s.
+for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
+                      ('nod',2.4),('shake',2.4),('jump',2.4),('walk',1.2),('sleep',3.6)]:
+    action=bpy.data.actions.new(name);rig.animation_data.action=action
+    end=round(duration*30)+1
+    for frame in list(range(1,end,3))+[end]:
+        t=(frame-1)/30;ph=t/duration*2*math.pi
+        reset()
+        # Relax the original A-pose down to the flanks in every neutral clip.
+        for sign,side in [(-1,'R'),(1,'L')]:
+            rotate('upper_arm.'+side,(0,1,0),sign*.32)
+        rotate('chest',(0,1,0),.018*math.sin(ph))
+        rig.pose.bones['spine'].scale=(1+.009*math.sin(ph),1+.009*math.sin(ph),1+.009*math.sin(ph))
+        rotate('head',(0,1,0),.025*math.sin(ph))
+        for j in range(1,5):rotate('tail.'+str(j),(0,0,1),.035*math.sin(ph-.45*j))
+        for side,off in [('L',0),('R',.7)]:
+            rotate('ear.'+side,(0,1,0),.025*math.sin(ph+off))
+            rotate('ear.'+side+'.tip',(1,0,0),.035*math.sin(ph+off-.5))
+        # Smooth gesture envelope reaches full pose at .6 s.
+        rise=math.sin(min(t/.6,1)*math.pi/2)**2
+        fall=math.sin(min((duration-t)/.45,1)*math.pi/2)**2
+        gesture=rise*fall
+        if name=='wave':
+            rotate('upper_arm.R',(0,1,0),-.32+1.98*gesture)
+            rotate('forearm.R',(0,1,0),(.28+.15*math.sin(2*ph))*gesture)
+            rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
+            rotate('head',(0,1,0),-.075*gesture)
+        elif name=='success':
+            for sign,side in [(-1,'R'),(1,'L')]:
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.35*gesture))
+                rotate('forearm.'+side,(0,1,0),-sign*.18*gesture)
+            shift('root',(0,0,.035*H*gesture))
+            rotate('head',(1,0,0),-.07*gesture)
+        elif name=='happy':
+            bounce=(1-math.cos(ph))/2
+            shift('root',(0,0,.055*H*bounce))
+            rotate('head',(0,1,0),.09*math.sin(ph))
+            for sign,side in [(-1,'R'),(1,'L')]:rotate('upper_arm.'+side,(0,1,0),sign*(.25-.50*bounce))
+        elif name=='nod':rotate('head',(1,0,0),.26*math.sin(ph))
+        elif name=='shake':rotate('head',(0,0,1),.25*math.sin(ph))
+        elif name=='jump':
+            lift=math.sin(math.pi*min(t/1.2,1))**2 if t<=1.2 else 0
+            shift('root',(0,0,.17*H*lift))
+            for sign,side in [(-1,'R'),(1,'L')]:
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.1*lift))
+                rotate('thigh.'+side,(1,0,0),-.20*lift)
+                rotate('shin.'+side,(1,0,0),.25*lift)
+        elif name=='walk':
+            # Offset gives a leg-forward silhouette at the shared .6s sample.
+            swing=math.cos(ph)
+            for sign,side in [(-1,'R'),(1,'L')]:
+                rotate('thigh.'+side,(1,0,0),sign*.38*swing)
+                rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.30)
+                rotate('upper_arm.'+side,(1,0,0),-sign*.25*swing)
+            shift('root',(0,0,.008*H*(1-math.cos(ph*2))))
+        elif name=='sleep':
+            rotate('neck',(1,0,0),.08)
+            rotate('head',(1,0,0),.24+.015*math.sin(ph))
+            for side in ['L','R']:rotate('ear.'+side,(1,0,0),.15)
+        for pb in rig.pose.bones:
+            pb.keyframe_insert('location',frame=frame,group=pb.name)
+            pb.keyframe_insert('rotation_quaternion',frame=frame,group=pb.name)
+            pb.keyframe_insert('scale',frame=frame,group=pb.name)
+    # Small asymmetries at the end are eliminated explicitly for seamless loops.
+    scene.frame_set(1)
+    for pb in rig.pose.bones:
+        for path in ['location','rotation_quaternion','scale']:pb.keyframe_insert(path,frame=end,group=pb.name)
+    track=rig.animation_data.nla_tracks.new();track.name=name
+    track.strips.new(name,1,action);track.mute=True
+    peaks[name]=.6
+rig.animation_data.action=None
+reset()
+scene.frame_set(1)
+marker('RIG done')
+
+# Keep original UVs, triangles and materials; resize only embedded image maps.
+textures=[]
+for img in bpy.data.images:
+    if not img.has_data or img.size[0]<2 or img.name in ['Render Result','Viewer Node']:continue
+    target=2048 if img.name=='texture_0' else 1024
+    img.scale(target,target)
+    textures.append({'name':img.name,'width':target,'height':target})
+active(rig);mesh.select_set(True)
+for track in rig.animation_data.nla_tracks:track.mute=False
+bpy.ops.export_scene.gltf(filepath=str(out),export_format='GLB',use_selection=True,
+    export_image_format='WEBP',export_image_quality=86,export_image_webp_fallback=False,
+    export_animations=True,export_animation_mode='NLA_TRACKS',export_nla_strips=True,
+    export_skins=True,export_yup=True,export_force_sampling=True,export_anim_slide_to_zero=True,
+    export_def_bones=True,export_all_influences=False)
+for track in rig.animation_data.nla_tracks:track.mute=True
+report={'bones':len(rest),'bone_landmarks':rest,'measurements':landmarks,'weight_method':heat,
+        'regions':regions,'max_seam_weight_difference':seam_error,'max_influences':4,
+        'textures':textures,'actions':peaks,'bytes':out.stat().st_size,
+        'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
+(review/'report.json').write_text(json.dumps(report,indent=2))
+assert out.stat().st_size<8_000_000, 'Web asset exceeds 8 MB budget'
+marker('WEB done')
+print(json.dumps({k:report[k] for k in ['bones','regions','max_seam_weight_difference','bytes']}),flush=True)
+
+if opts.renders:
+    # Headless EEVEE uses the runner's software EGL context.
+    scene.render.engine='BLENDER_EEVEE_NEXT'
+    scene.eevee.taa_render_samples=32
+    scene.render.resolution_x=512;scene.render.resolution_y=512;scene.render.resolution_percentage=100
+    scene.render.image_settings.file_format='PNG'
+    scene.world.use_nodes=True
+    scene.world.node_tree.nodes.get('Background').inputs[0].default_value=(.24,.24,.24,1)
+    scene.world.node_tree.nodes.get('Background').inputs[1].default_value=.5
+    scene.view_settings.view_transform='AgX'
+    def aim(o,target):o.rotation_euler=(Vector(target)-o.location).to_track_quat('-Z','Y').to_euler()
+    for location,power,size in [((cx-2.5,-3.5,4),500,4),((cx+3,-1,2),250,3),((cx+1,3,3),550,3)]:
+        bpy.ops.object.light_add(type='AREA',location=location)
+        light=bpy.context.object;light.data.energy=power;light.data.shape='DISK';light.data.size=size;aim(light,(cx,0,0))
+    bpy.ops.mesh.primitive_plane_add(size=200,location=(0,0,z0-.012))
+    floor=bpy.context.object;floor.name='Review floor'
+    mat=bpy.data.materials.new('Review warm grey');mat.diffuse_color=(.24,.22,.24,1);floor.data.materials.append(mat)
+    bpy.ops.object.camera_add(location=(cx,-6,.25))
+    camera=bpy.context.object;camera.data.type='ORTHO';camera.data.ortho_scale=H*1.42
+    aim(camera,(cx+.055*H,0,z0+.53*H));scene.camera=camera
+    for name in peaks:
+        rig.animation_data.action=bpy.data.actions[name]
+        scene.frame_set(19);bpy.context.view_layer.update()
+        scene.render.filepath=str(review/(name+'.png'))
+        bpy.ops.render.render(write_still=True)
+    rig.animation_data.action=bpy.data.actions['idle'];scene.frame_set(19)
+    bpy.ops.wm.save_as_mainfile(filepath=str(review/'user-fox.blend'))
+    print('Blender action renders complete',flush=True)

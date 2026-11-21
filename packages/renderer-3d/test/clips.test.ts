@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { clipSampleTime, resolveClipName } from '../src/clips'
+import { userFoxAnimations } from '../../../apps/playground/src/models'
 
 describe('glTF clip mapping', () => {
   const names = ['Idle_Breath', 'Walk_Cycle', 'Sleeping', 'Wave']
@@ -28,5 +29,20 @@ describe('glTF clip mapping', () => {
     expect(clipSampleTime(3, -1)).toBe(0)
     expect(clipSampleTime(0, .6)).toBe(0)
     expect(clipSampleTime(3, NaN)).toBe(0)
+  })
+
+  it('maps the owner fox gestures and uses idle for unsupported SDK actions', () => {
+    const clips = ['idle', 'wave', 'happy', 'success', 'nod', 'shake', 'jump', 'walk', 'sleep']
+    for (const action of ['idle', 'wave', 'happy', 'success', 'jump', 'walk', 'sleep']) {
+      expect(resolveClipName(clips, action, userFoxAnimations)).toBe(action)
+    }
+    expect(resolveClipName(clips, 'thinking', userFoxAnimations)).toBe('nod')
+    for (const action of ['sad', 'error']) {
+      expect(resolveClipName(clips, action, userFoxAnimations)).toBe('shake')
+    }
+    for (const action of ['eating', 'working', 'talking', 'petting', 'dragged', 'unknown']) {
+      expect(resolveClipName(clips, action, userFoxAnimations)).toBe('idle')
+    }
+    for (const duration of [1.2, 2.4, 3, 3.6]) expect(clipSampleTime(duration, .6)).toBe(.6)
   })
 })
