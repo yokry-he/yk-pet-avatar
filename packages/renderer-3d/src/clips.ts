@@ -24,7 +24,7 @@ function clipNameMatches(name: string, alias: string): boolean {
   return new RegExp(`(^|[^a-z])${alias}([^a-z]|$)`).test(lower)
 }
 
-/** Pick a glTF clip name for a standard action. Explicit map wins, then a fuzzy alias. */
+/** Explicit mapping, then an alias, then the model's idle clip for unsupported actions. */
 export function resolveClipName(
   names: readonly string[],
   action: string,
@@ -34,5 +34,14 @@ export function resolveClipName(
   if (listed && names.includes(listed)) return listed
   const aliases = ALIASES[action] ?? [action]
   const found = names.find(name => aliases.some(alias => clipNameMatches(name, alias)))
-  return found ?? null
+  if (found) return found
+  const idle = map?.idle
+  if (idle && names.includes(idle)) return idle
+  return names.find(name => ALIASES.idle!.some(alias => clipNameMatches(name, alias))) ?? null
+}
+
+/** Seconds within a looping clip. Shared by held previews and animation playback. */
+export function clipSampleTime(duration: number, seconds: number): number {
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(seconds)) return 0
+  return Math.max(0, seconds) % duration
 }

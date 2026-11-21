@@ -59,6 +59,15 @@ const styleParam = query.get('style') as PetStyleId | null
 if (styleParam && listStyles().some(style => style.id === styleParam)) pet.setConfig({ style: styleParam })
 const poseParam = query.get('pose')
 if ((POSES as readonly string[]).includes(poseParam ?? '')) pet.setConfig({ appearance: { pose: poseParam as PetPose } })
+if (query.get('model') === 'felt-fox') {
+  pet.setConfig({
+    model: {
+      url: new URL('../../../examples/models/felt-fox.glb', import.meta.url).href,
+      animations: { idle: 'idle', wave: 'wave', happy: 'happy', success: 'success' },
+    },
+    behavior: { autonomous: false },
+  })
+}
 const actionParam = query.get('action')
 if (actionParam) {
   pet.setConfig({ behavior: { autonomous: false } })
