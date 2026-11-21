@@ -6,7 +6,6 @@
 import {
   getStyle,
   resolveExpression,
-  styledProportions,
   type Emotion,
   type PetAction,
   type PetRenderer,
@@ -16,7 +15,7 @@ import {
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { resolveClipName } from './clips'
+import { clipSampleTime, resolveClipName } from './clips'
 import { cameraFit, visualBounds } from './sculpt'
 import { createProceduralPet, qualityFromState, type ProceduralPet } from './procedural'
 
@@ -205,6 +204,7 @@ export class ThreePetRenderer implements PetRenderer {
     this.#state = state
     this.#ensurePet(state, false)
     this.#pet?.update(state, state.animationTime ?? this.#elapsed)
+    this.#syncModel(0)
     this.#fitCamera()
     if (!this.#frame) this.#renderer?.render(this.#scene, this.#camera)
   }
@@ -305,6 +305,7 @@ export class ThreePetRenderer implements PetRenderer {
 
   async #loadModel(url: string, state: PetVisualState): Promise<void> {
     this.#loadingUrl = url
+    if (this.canvas) this.canvas.dataset.model = 'loading'
     const version = ++this.#loadVersion
     const format = state.model?.format
     if ((format === 'vrm' || url.toLowerCase().endsWith('.vrm')) && !this.#warnedVrm) {
@@ -322,8 +323,9 @@ export class ThreePetRenderer implements PetRenderer {
       const box = new THREE.Box3().setFromObject(gltf.scene)
       const size = box.getSize(new THREE.Vector3())
       const center = box.getCenter(new THREE.Vector3())
-      gltf.scene.position.sub(center)
-      gltf.scene.scale.setScalar(1.55 / Math.max(size.y, 0.001))
+      const scale = 1.55 / Math.max(size.y, 0.001)
+      gltf.scene.position.copy(center).multiplyScalar(-scale)
+      gltf.scene.scale.setScalar(scale)
       gltf.scene.position.y -= 0.15
       this.#pet?.dispose()
       this.#pet = null
@@ -344,7 +346,9 @@ export class ThreePetRenderer implements PetRenderer {
               : name.includes('head')
                 ? 'head'
                 : null
-        if (kind) nodes.push({ object, base: object.scale.clone(), kind })
+        // Preserve the authored skeleton: scaling bones also scales every child
+        // and would overwrite animation keys. Optional proportions affect meshes.
+        if (kind && object instanceof THREE.Mesh) nodes.push({ object, base: object.scale.clone(), kind })
       })
       this.#clips = {
         mixer: new THREE.AnimationMixer(gltf.scene),
@@ -353,7 +357,12 @@ export class ThreePetRenderer implements PetRenderer {
         current: null,
         nodes,
       }
+      this.#syncModel(0)
+      if (this.canvas) this.canvas.dataset.model = 'loaded'
+      if (!this.#frame) this.#renderer?.render(this.#scene, this.#camera)
     } catch (error) {
+      if (this.#disposed || version !== this.#loadVersion) return
+      if (this.canvas) this.canvas.dataset.model = 'fallback'
       console.warn('[yk-pet] glTF load failed; the procedural pet stays visible.', error)
     }
   }
@@ -371,11 +380,13 @@ export class ThreePetRenderer implements PetRenderer {
         binding.current = clipName
       }
     }
-    binding.mixer.update(dt)
-    const props = styledProportions(
-      this.#state.appearance?.proportions ?? NEUTRAL_PROPORTIONS,
-      getStyle(this.#state.style),
-    )
+    const sample = this.#state.animationTime
+    if (sample !== undefined && binding.current) {
+      const clip = binding.animations.find(item => item.name === binding.current)
+      if (clip) binding.mixer.clipAction(clip).time = clipSampleTime(clip.duration, sample)
+      binding.mixer.update(0)
+    } else binding.mixer.update(dt)
+    const props = this.#state.appearance?.proportions ?? NEUTRAL_PROPORTIONS
     for (const node of binding.nodes) {
       const factor =
         node.kind === 'head'
