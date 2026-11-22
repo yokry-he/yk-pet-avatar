@@ -8,10 +8,11 @@ The source is never copied or modified. Landmark proportions below are small
 anatomical priors for this upright chibi, applied to measured vertex clusters.
 Heat weights are solved on a closed voxel proxy and transferred to the source
 with nearest-face interpolation. Anatomical geodesic blends, surface smoothing
-and identical UV-seam weights protect the exclusive ear/head/tail domains. Four influences
-maximum, no geometry reduction. All nine looping actions have a readable pose
+and identical UV-seam weights protect the exclusive ear/head/tail domains.
+Four influences maximum, no geometry reduction. All nine looping actions have a readable pose
 at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
 A landmark/weight/export report and editable review blend accompany the renders.
+Add --video for 512px, 24fps H.264 wave/walk previews in .art-scratch/video.
 """
 import argparse
 import json
@@ -312,7 +313,7 @@ for i,p in enumerate(P):
         delta=d_core[i]-d_arms[side][i]
         if not math.isfinite(delta):
             delta=(abs(x-cx)-.22*H)
-        armblend=smooth(-.065*H,.065*H,delta)
+        armblend=smooth(-.095*H,.095*H,delta)
         armblend*=1-smooth(neck_z-.095*H,neck_z-.025*H,z)
         legblend=1-smooth(z0+.13*H,z0+.235*H,z)
         if legblend>0:
@@ -406,6 +407,42 @@ for iteration in range(5):
         updated.append(row)
     weight_rows=updated
 
+# Reserve four stable influence slots at each joint before truncation. A
+# changing fifth influence otherwise causes an abrupt jump on short edges.
+for i,row in enumerate(weight_rows):
+    if vertex_regions[i]!='body':continue
+    side='L' if P[i,0]>cx else 'R'
+    other='R' if side=='L' else 'L'
+    row=dict(row)
+    for part in ['upper_arm','forearm','hand']:
+        row['chest']=row.get('chest',0)+row.pop(part+'.'+other,0)
+    arm_names=[part+'.'+side for part in ['upper_arm','forearm','hand']]
+    arm_total=sum(row.get(n,0) for n in arm_names)
+    if P[i,2]<z0+.26*H:
+        lower=smooth(z0+.16*H,z0+.26*H,P[i,2])
+        removed=0.
+        for n in arm_names:
+            removed+=row.get(n,0)*(1-lower)
+            if n in row:row[n]*=lower
+        row['chest']=row.get('chest',0)+removed
+        arm_total*=lower
+    if arm_total>1e-8:
+        for n in list(row):
+            if n in ['hips','spine','neck'] or n.startswith(('thigh.','shin.','foot.')):
+                row['chest']=row.get('chest',0)+row.pop(n)
+        if row.get('head',0)>0:
+            row['forearm.'+side]=row.get('forearm.'+side,0)+row.pop('hand.'+side,0)
+    elif P[i,2]<z0+.18*H:
+        for n in list(row):
+            if n=='chest' or n.startswith(('upper_arm.','forearm.','hand.')):
+                row['hips']=row.get('hips',0)+row.pop(n)
+        # Distal leg groups never cross the crotch onto the other leg.
+        for part in ['shin','foot']:
+            row['thigh.'+other]=row.get('thigh.'+other,0)+row.pop(part+'.'+other,0)
+        if row.get('thigh.'+other,0)>.005:
+            row['shin.'+side]=row.get('shin.'+side,0)+row.pop('foot.'+side,0)
+    weight_rows[i]={n:w for n,w in row.items() if w>1e-8}
+
 # Exact coincident UV seams get identical normalised weights after smoothing.
 seam_vertices={}
 for i,p in enumerate(P):seam_vertices.setdefault(tuple(round(c,6) for c in p),[]).append(i)
@@ -476,15 +513,17 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         gesture=rise*fall
         if name=='wave':
             rotate('upper_arm.R',(0,1,0),-.32+(2.35+.16*math.sin(3*ph))*gesture)
-            shift('shoulder.R',(-.11*H*gesture,-.18*H*gesture,.07*H*gesture))
+            shift('shoulder.R',(-.07*H*gesture,-.12*H*gesture,.015*H*gesture))
             rotate('forearm.R',(0,1,0),(.12+.24*math.sin(3*ph))*gesture)
             rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.23*gesture))
-                shift('shoulder.'+side,(sign*.14*H*gesture,-.18*H*gesture,.15*H*gesture))
-                rotate('forearm.'+side,(0,1,0),-sign*.18*gesture)
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.00*gesture))
+                shift('shoulder.'+side,(sign*.12*H*gesture,-.12*H*gesture,.12*H*gesture))
+                rotate('forearm.'+side,(0,1,0),sign*.10*gesture)
+                rig.pose.bones['upper_arm.'+side].scale=(1,1+.25*gesture,1)
+                rig.pose.bones['forearm.'+side].scale=(1,1+.10*gesture,1)
             shift('root',(0,0,.035*H*gesture))
             rotate('head',(1,0,0),-.07*gesture)
         elif name=='happy':
@@ -587,6 +626,8 @@ for name in peaks:
                    for label,values in measures.items() if len(values[0])}
 rig.animation_data.action=None
 reset();scene.frame_set(1)
+assert seam_gap < H*1e-5, 'Skinned UV seams separated'
+assert all(regions['rigid_face']['max']<1.011 for regions in stretch.values()), 'Facial surface deformed'
 print('STRETCH '+json.dumps(stretch),flush=True)
 
 # Keep original UVs, triangles and materials; resize only embedded image maps.
@@ -609,7 +650,7 @@ report={'bones':len(rest),'bone_landmarks':rest,'measurements':landmarks,'weight
         'stretch':stretch,'worst_edges':sorted(worst_edges,key=lambda e:e['ratio'],reverse=True)[:12],
         'max_deformed_seam_gap':seam_gap,'validation_frame_step':6,
         'textures':textures,'actions':peaks,'bytes':out.stat().st_size,
-        'heat_limb_blend':.65,'smoothing_iterations':5,'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
+        'heat_limb_blend':.65,'smoothing_iterations':{'spatial':3,'surface':5},'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
 (review/'report.json').write_text(json.dumps(report,indent=2))
 assert out.stat().st_size<5_000_000, 'Web asset exceeds 5 MB budget'
 marker('POSES done')
@@ -650,7 +691,7 @@ if opts.renders and (not opts.skip_stills or opts.video):
     if opts.video:
         video_dir=phase.parent/'video'
         video_dir.mkdir(parents=True,exist_ok=True)
-        scene.eevee.taa_render_samples=16
+        scene.eevee.taa_render_samples=8
         scene.render.fps=24
         for name in ['wave','walk']:
             sequence=video_dir/(name+'-frames')
