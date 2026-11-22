@@ -260,7 +260,7 @@ export class ThreePetRenderer implements PetRenderer {
       model: state.model?.url ?? '',
       props: state.props ?? [],
     })
-    if (this.#lightPose !== (state.appearance?.pose ?? 'sit')) this.#applyLights(state)
+    if (this.#lightPose !== `${state.appearance?.pose ?? 'sit'}:${Boolean(this.#model)}`) this.#applyLights(state)
     if (!force && signature === this.#signature) return
     this.#signature = signature
     this.#pet?.dispose()
@@ -286,7 +286,26 @@ export class ThreePetRenderer implements PetRenderer {
     })
     this.#lights.clear()
     const style = getStyle(state.style)
-    this.#lightPose = state.appearance?.pose ?? 'sit'
+    this.#lightPose = `${state.appearance?.pose ?? 'sit'}:${Boolean(this.#model)}`
+    // Imported materials already describe their authored colours. Keep the
+    // style palette on procedural pets, and illuminate loaded assets in white.
+    if (this.#renderer) {
+      this.#renderer.outputColorSpace = THREE.SRGBColorSpace
+      this.#renderer.toneMapping = this.#model ? THREE.ACESFilmicToneMapping : THREE.NeutralToneMapping
+      this.#renderer.toneMappingExposure = 1
+    }
+    this.#scene.environmentIntensity = this.#model ? 0.35 : 1
+    if (this.#model) {
+      this.#lights.add(new THREE.HemisphereLight(0xffffff, 0x777777, 0.65))
+      const key = new THREE.DirectionalLight(0xffffff, 2.4)
+      key.position.set(-3, 4.5, 4)
+      const fill = new THREE.DirectionalLight(0xffffff, 1.1)
+      fill.position.set(3, 1.8, 2.4)
+      const rim = new THREE.DirectionalLight(0xffffff, 1.2)
+      rim.position.set(1.5, 3, -2.2)
+      this.#lights.add(key, fill, rim)
+      return
+    }
     const soft = style.id === 'plush'
     this.#lights.add(new THREE.HemisphereLight('#fff7ed', '#8b6b62', style.lights.ambient * (soft ? 1.15 : 0.34)))
     const key = new THREE.DirectionalLight(style.lights.key, style.lights.keyIntensity * (soft ? 0.85 : 1.35))
@@ -331,6 +350,7 @@ export class ThreePetRenderer implements PetRenderer {
       this.#pet = null
       this.#root.clear()
       this.#model = gltf.scene
+      this.#applyLights(this.#state)
       this.#root.add(gltf.scene)
       this.#framing = ''
       this.#fitCamera()

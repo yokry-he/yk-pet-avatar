@@ -6,9 +6,9 @@ Usage: blender -b --factory-startup --python tools/blender/rig_user_model.py --
 
 The source is never copied or modified. Landmark proportions below are small
 anatomical priors for this upright chibi, applied to measured vertex clusters.
-Heat weights are attempted first. Since the source contains UV-split surface
-patches, skin cleanup uses continuous spatial capsule weights (identical at
-coincident seam vertices), with exclusive ear/head/tail domains. Four influences
+Heat weights are solved on a closed voxel proxy and transferred to the source
+with nearest-face interpolation. Anatomical geodesic blends, surface smoothing
+and identical UV-seam weights protect the exclusive ear/head/tail domains. Four influences
 maximum, no geometry reduction. All nine looping actions have a readable pose
 at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
 A landmark/weight/export report and editable review blend accompany the renders.
@@ -18,6 +18,7 @@ import json
 import heapq
 import math
 import sys
+import subprocess
 from pathlib import Path
 
 import bpy
@@ -28,6 +29,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--in', dest='source', required=True)
 parser.add_argument('--out', required=True)
 parser.add_argument('--renders')
+parser.add_argument('--skip-stills', action='store_true')
+parser.add_argument('--video', action='store_true', help='Render 3.6 second wave/walk MP4 previews')
 opts = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 out = Path(opts.out).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +117,7 @@ for i in np.flatnonzero(~np.isfinite(d_tail)|~np.isfinite(d_other)):
     candidates=kd.find_n(Vector(P[i]),40)
     nearest=next((j for _,j,_ in candidates if np.isfinite(d_tail[j]) and np.isfinite(d_other[j])),None)
     if nearest is not None:tail_mask[i]=tail_mask[nearest]
+d_tail_surface=geodesic(tail_mask)
 d_core=geodesic(core_seed|head_seed)
 d_arms={side:geodesic(mask) for side,mask in arm_seeds.items()}
 tail_points = P[tail_mask]
@@ -194,17 +198,55 @@ for i in range(4):
     bone('tail.'+str(i+1),tail_nodes[i],tail_nodes[i+1],'hips' if i==0 else 'tail.'+str(i))
 bpy.ops.object.mode_set(mode='OBJECT')
 
-# Attempt Blender heat weighting; retain the result for diagnostics, then repair
-# domains and seams with continuous capsule weights. Source UV splits remain.
-active(mesh)
+# A closed, welded voxel proxy gives bone heat a continuous manifold instead
+# of the source's UV-split reconstruction patches. Transfer interpolated surface
+# weights back without changing a single source vertex, UV or material.
+proxy = mesh.copy()
+proxy.data = mesh.data.copy()
+proxy.name = 'Closed heat-weight proxy'
+bpy.context.collection.objects.link(proxy)
+proxy.vertex_groups.clear()
+proxy.modifiers.clear()
+active(proxy)
+proxy.data.remesh_voxel_size = .012 * H
+proxy.data.use_remesh_preserve_volume = True
+bpy.ops.object.voxel_remesh()
+# Remove voxel stair steps before solving the Laplacian heat equation.
+relax = proxy.modifiers.new('Proxy surface relaxation', 'SMOOTH')
+relax.factor = .65
+relax.iterations = 4
+bpy.ops.object.modifier_apply(modifier=relax.name)
+proxy_vertices = len(proxy.data.vertices)
 rig.select_set(True)
-bpy.context.view_layer.objects.active=rig
-heat='automatic'
+bpy.context.view_layer.objects.active = rig
+heat_weights = [{} for _ in P]
+heat = 'closed voxel proxy automatic + nearest-face interpolated transfer'
 try:
     bpy.ops.object.parent_set(type='ARMATURE_AUTO')
-    if not all(v.groups for v in mesh.data.vertices): heat='automatic incomplete; capsule fallback'
+    coverage = sum(bool(v.groups) for v in proxy.data.vertices) / proxy_vertices
+    if coverage < .99:
+        raise RuntimeError(f'Heat coverage only {coverage:.1%}')
+    active(mesh)
+    # Destination groups must exist before Data Transfer can match by name.
+    for group in proxy.vertex_groups:
+        if group.name not in mesh.vertex_groups:mesh.vertex_groups.new(name=group.name)
+    transfer = mesh.modifiers.new('Interpolated proxy skin', 'DATA_TRANSFER')
+    transfer.object = proxy
+    transfer.use_vert_data = True
+    transfer.data_types_verts = {'VGROUP_WEIGHTS'}
+    transfer.vert_mapping = 'POLYINTERP_NEAREST'
+    transfer.layers_vgroup_select_src = 'ALL'
+    transfer.layers_vgroup_select_dst = 'NAME'
+    bpy.ops.object.modifier_apply(modifier=transfer.name)
+    for v in mesh.data.vertices:
+        heat_weights[v.index] = {mesh.vertex_groups[g.group].name:g.weight for g in v.groups if g.weight > 1e-7}
+    if sum(bool(w) for w in heat_weights) < .99*len(P):
+        raise RuntimeError('Incomplete transferred weights')
 except RuntimeError as exc:
-    heat='automatic failed; capsule fallback: '+str(exc)
+    heat = 'voxel heat failed; geodesic capsule fallback: ' + str(exc)
+    heat_weights = [{} for _ in P]
+    print(heat, flush=True)
+bpy.data.objects.remove(proxy, do_unlink=True)
 mesh.parent=rig
 if not any(m.type=='ARMATURE' for m in mesh.modifiers):
     mod=mesh.modifiers.new('Fox skin','ARMATURE');mod.object=rig
@@ -230,11 +272,17 @@ def capsules(p,names,soft=.035):
     return {n:float(v/w.sum()) for n,v in zip(names,w) if v>1e-6}
 
 regions={'head':0,'ears':0,'tail':0,'body':0}
+vertex_regions=[]
+weight_rows=[]
 for i,p in enumerate(P):
     x,y,z=p
     if tail_mask[i]:
         weights=capsules(p,['tail.1','tail.2','tail.3','tail.4'],.10)
+        attachment=smooth(.015*H,.18*H,d_other[i])
+        weights={n:w*attachment for n,w in weights.items()}
+        weights['tail.1']=weights.get('tail.1',0)+1-attachment
         regions['tail']+=1
+        vertex_regions.append('tail')
     elif z>neck_z+.005*H:
         # Face, muzzle and cheek fluff stay rigid. Ear transition is above eyes.
         sign=1 if x>cx else -1
@@ -247,11 +295,14 @@ for i,p in enumerate(P):
             weights={n:w*ear_blend for n,w in weights.items()}
             weights['head']=1-ear_blend
             regions['ears']+=1
-        else: weights={'head':1};regions['head']+=1
+            vertex_regions.append('ears')
+        else:
+            weights={'head':1};regions['head']+=1
+            vertex_regions.append('head')
     else:
-        torso=capsules(p,['hips','spine','chest','neck'],.075)
+        torso=capsules(p,['hips','chest'],.10)
         # Smooth neck attachment below the rigid face, away from the eyes.
-        hblend=smooth(neck_z-.045*H,neck_z+.005*H,z)
+        hblend=smooth(neck_z-.09*H,neck_z+.005*H,z)
         if hblend:
             torso={n:w*(1-hblend) for n,w in torso.items()};torso['head']=hblend
         sign=1 if x>cx else -1;side='L' if sign==1 else 'R'
@@ -262,16 +313,109 @@ for i,p in enumerate(P):
         if not math.isfinite(delta):
             delta=(abs(x-cx)-.22*H)
         armblend=smooth(-.065*H,.065*H,delta)
-        armblend*=1-smooth(neck_z-.055*H,neck_z+.005*H,z)
+        armblend*=1-smooth(neck_z-.095*H,neck_z-.025*H,z)
         legblend=1-smooth(z0+.13*H,z0+.235*H,z)
         if legblend>0:
-            legs=capsules(p,['thigh.'+side,'shin.'+side,'foot.'+side],.045)
+            # Blend the two thighs through the crotch instead of changing the
+            # controlling leg abruptly at x=center. Distal bones stay below it.
+            left=smooth(-.035*H,.035*H,x-cx)
+            legs={}
+            distal=1-smooth(z0+.10*H,z0+.17*H,z)
+            for leg_side,side_weight in [('L',left),('R',1-left)]:
+                names=['thigh.'+leg_side,'shin.'+leg_side,'foot.'+leg_side]
+                row=capsules(p,names,.055)
+                auto={n:heat_weights[i].get(n,0) for n in names}
+                total=sum(auto.values())
+                if total>1e-6:row={n:.65*auto[n]/total+.35*row.get(n,0) for n in names}
+                row={n:w*distal for n,w in row.items()}
+                row['thigh.'+leg_side]=row.get('thigh.'+leg_side,0)+1-distal
+                for n,w in row.items():legs[n]=w*side_weight
             torso={n:w*(1-legblend) for n,w in torso.items()}
             for n,w in legs.items():torso[n]=torso.get(n,0)+w*legblend
+        # Heat supplies the distribution *inside* a limb; geodesic blends
+        # control how much of that limb reaches the torso. Unrestricted heat
+        # can jump between nearby chest/paw faces on this fused reconstruction.
+        automatic={n:heat_weights[i].get(n,0) for n in limb}
+        auto_total=sum(automatic.values())
+        limb_weights=capsules(p,limb,.07)
+        if auto_total>1e-6:
+            limb_weights={n:.65*automatic[n]/auto_total+.35*limb_weights.get(n,0) for n in limb}
+        distal_blend=smooth(.60,.95,armblend)
+        moved=sum(w for n,w in limb_weights.items() if n!='upper_arm.'+side)*(1-distal_blend)
+        limb_weights={n:w if n=='upper_arm.'+side else w*distal_blend for n,w in limb_weights.items()}
+        limb_weights['upper_arm.'+side]=limb_weights.get('upper_arm.'+side,0)+moved
+        # Free one influence slot before the hand starts contributing. This
+        # prevents top-four truncation from dropping a large shoulder weight.
+        hand_blend=smooth(.35,.8,armblend)
+        hand_weight=limb_weights.get('hand.'+side,0)*(1-hand_blend)
+        limb_weights['hand.'+side]=limb_weights.get('hand.'+side,0)*hand_blend
+        limb_weights['forearm.'+side]=limb_weights.get('forearm.'+side,0)+hand_weight
+        if armblend>0:
+            hip_to_chest=smooth(0,.25,armblend)
+            moved=torso.get('hips',0)*hip_to_chest
+            torso['hips']=torso.get('hips',0)-moved
+            torso['chest']=torso.get('chest',0)+moved
         weights={n:w*(1-armblend) for n,w in torso.items()}
         if armblend:
-            for n,w in capsules(p,limb,.055).items():weights[n]=weights.get(n,0)+w*armblend
+            for n,w in limb_weights.items():weights[n]=weights.get(n,0)+w*armblend
+        # Make both sides of the fused rump attachment follow the hips; the
+        # exclusive tail chain begins with an unanimated root at this socket.
+        rump=smooth(0,.10*H,d_tail_surface[i])
+        weights={n:w*rump for n,w in weights.items()}
+        weights['hips']=weights.get('hips',0)+1-rump
         regions['body']+=1
+        vertex_regions.append('body')
+    weight_rows.append(weights)
+
+# Smooth shoulder, hip and neck transitions on the welded surface graph.
+# Rigid face and exclusive ear/tail chains are never mixed with body groups.
+# Surface patches are irregularly tessellated. A spatial kernel first removes
+# tiny heat discontinuities without welding or changing the rendered geometry.
+body_ids=[i for i,r in enumerate(vertex_regions) if r=='body']
+kernels={}
+for i in body_ids:
+    neighbours=[(j,math.exp(-(d/(.045*H))**2)) for _,j,d in kd.find_range(Vector(P[i]),.075*H)
+                if vertex_regions[j]=='body']
+    total=sum(w for _,w in neighbours)
+    kernels[i]=[(j,w/total) for j,w in neighbours]
+for iteration in range(3):
+    updated=list(weight_rows)
+    for i,neighbours in kernels.items():
+        row={}
+        for j,k in neighbours:
+            for n,w in weight_rows[j].items():row[n]=row.get(n,0)+k*w
+        updated[i]=row
+    weight_rows=updated
+for iteration in range(5):
+    updated=[]
+    for i,w in enumerate(weight_rows):
+        if vertex_regions[i]!='body':
+            updated.append(w);continue
+        neighbours=[j for j,_ in adjacency[i] if vertex_regions[j]=='body']
+        if not neighbours:
+            updated.append(w);continue
+        row={n:.55*v for n,v in w.items()}
+        for j in neighbours:
+            for n,v in weight_rows[j].items():row[n]=row.get(n,0)+.45*v/len(neighbours)
+        # Restore the smooth attachment to the fully rigid facial region.
+        hblend=smooth(neck_z-.09*H,neck_z+.005*H,P[i,2])
+        total=sum(v for n,v in row.items() if n!='head')
+        if total>1e-8:
+            row={n:v/total*(1-hblend) for n,v in row.items() if n!='head'}
+            if hblend:row['head']=hblend
+        updated.append(row)
+    weight_rows=updated
+
+# Exact coincident UV seams get identical normalised weights after smoothing.
+seam_vertices={}
+for i,p in enumerate(P):seam_vertices.setdefault(tuple(round(c,6) for c in p),[]).append(i)
+for ids in seam_vertices.values():
+    if len(ids)<2:continue
+    row={}
+    for i in ids:
+        for n,w in weight_rows[i].items():row[n]=row.get(n,0)+w/len(ids)
+    for i in ids:weight_rows[i]=row
+for i,weights in enumerate(weight_rows):
     weights=sorted(weights.items(),key=lambda kv:kv[1],reverse=True)[:4]
     total=sum(w for _,w in weights)
     for n,w in weights:
@@ -322,7 +466,7 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         rotate('chest',(0,1,0),.018*math.sin(ph))
         rig.pose.bones['spine'].scale=(1+.009*math.sin(ph),1+.009*math.sin(ph),1+.009*math.sin(ph))
         rotate('head',(0,1,0),.025*math.sin(ph))
-        for j in range(1,5):rotate('tail.'+str(j),(0,0,1),.035*math.sin(ph-.45*j))
+        for j in range(2,5):rotate('tail.'+str(j),(0,0,1),.035*math.sin(ph-.45*j))
         for side,off in [('L',0),('R',.7)]:
             rotate('ear.'+side,(0,1,0),.025*math.sin(ph+off))
             rotate('ear.'+side+'.tip',(1,0,0),.035*math.sin(ph+off-.5))
@@ -331,25 +475,25 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         fall=math.sin(min((duration-t)/.45,1)*math.pi/2)**2
         gesture=rise*fall
         if name=='wave':
-            rotate('upper_arm.R',(0,1,0),-.32+1.92*gesture)
-            shift('shoulder.R',(-.055*H*gesture,-.15*H*gesture,.035*H*gesture))
-            rotate('forearm.R',(0,1,0),(.28+.15*math.sin(2*ph))*gesture)
+            rotate('upper_arm.R',(0,1,0),-.32+(2.35+.16*math.sin(3*ph))*gesture)
+            shift('shoulder.R',(-.11*H*gesture,-.18*H*gesture,.07*H*gesture))
+            rotate('forearm.R',(0,1,0),(.12+.24*math.sin(3*ph))*gesture)
             rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.05*gesture))
-                shift('shoulder.'+side,(sign*.07*H*gesture,-.15*H*gesture,.04*H*gesture))
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.23*gesture))
+                shift('shoulder.'+side,(sign*.14*H*gesture,-.18*H*gesture,.15*H*gesture))
                 rotate('forearm.'+side,(0,1,0),-sign*.18*gesture)
             shift('root',(0,0,.035*H*gesture))
             rotate('head',(1,0,0),-.07*gesture)
         elif name=='happy':
             bounce=(1-math.cos(ph))/2
-            shift('root',(0,0,.055*H*bounce))
+            shift('root',(0,0,.085*H*bounce))
             rotate('head',(0,1,0),.09*math.sin(ph))
             for sign,side in [(-1,'R'),(1,'L')]:rotate('upper_arm.'+side,(0,1,0),sign*(.25-.50*bounce))
-        elif name=='nod':rotate('head',(1,0,0),.26*math.sin(ph))
-        elif name=='shake':rotate('head',(0,0,1),.25*math.sin(ph))
+        elif name=='nod':rotate('head',(1,0,0),.40*math.sin(ph))
+        elif name=='shake':rotate('head',(0,0,1),.42*math.sin(ph))
         elif name=='jump':
             lift=math.sin(math.pi*min(t/1.2,1))**2 if t<=1.2 else 0
             shift('root',(0,0,.17*H*lift))
@@ -361,10 +505,13 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             # Offset gives a leg-forward silhouette at the shared .6s sample.
             swing=math.cos(ph)
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('thigh.'+side,(1,0,0),sign*.38*swing)
-                rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.30)
-                rotate('upper_arm.'+side,(1,0,0),-sign*.25*swing)
-            shift('root',(0,0,.008*H*(1-math.cos(ph*2))))
+                rotate('thigh.'+side,(1,0,0),sign*.55*swing)
+                rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.50)
+                arm_rotation('upper_arm.'+side,sign*.24,-sign*.40*swing)
+                rotate('foot.'+side,(1,0,0),-sign*.12*swing)
+            shift('root',(.018*H*math.sin(ph),0,.018*H*(1-math.cos(ph*2))))
+            rotate('hips',(0,1,0),.055*math.sin(ph))
+            for j in range(2,5):rotate('tail.'+str(j),(0,0,1),.055*math.sin(ph-.6*j))
         elif name=='sleep':
             rotate('neck',(1,0,0),.08)
             rotate('head',(1,0,0),.24+.015*math.sin(ph))
@@ -392,6 +539,56 @@ reset()
 scene.frame_set(1)
 marker('RIG done')
 
+# Evaluate the actual skinned surface throughout every exported action. Tiny
+# degenerate edges are excluded from ratios but UV-seam distances are checked.
+edges=np.array([e.vertices[:] for e in mesh.data.edges],dtype=int)
+rest_lengths=np.linalg.norm(P[edges[:,1]]-P[edges[:,0]],axis=1)
+valid=rest_lengths>H*1e-5
+labels=[]
+for a,b in edges:
+    kinds={vertex_regions[a],vertex_regions[b]}
+    z=(P[a,2]+P[b,2])/2
+    if kinds=={'head'}:label='rigid_face'
+    elif 'ears' in kinds:label='ears'
+    elif 'tail' in kinds:label='tail'
+    elif z>neck_z-.065*H:label='neck'
+    elif z<z0+.245*H:label='hips_legs'
+    else:label='shoulders_torso'
+    labels.append(label)
+labels=np.array(labels)
+stretch={}
+worst_edges=[]
+seam_gap=0.
+depsgraph=bpy.context.evaluated_depsgraph_get()
+for name in peaks:
+    rig.animation_data.action=bpy.data.actions[name]
+    end=int(rig.animation_data.action.frame_range[1])
+    samples=sorted(set(list(range(1,end+1,6))+[19,end]))
+    measures={label:[] for label in set(labels)}
+    for frame in samples:
+        scene.frame_set(frame);bpy.context.view_layer.update()
+        evaluated=mesh.evaluated_get(depsgraph)
+        coordinates=np.array([v.co[:] for v in evaluated.data.vertices])
+        lengths=np.linalg.norm(coordinates[edges[:,1]]-coordinates[edges[:,0]],axis=1)
+        ratio=lengths/np.maximum(rest_lengths,H*1e-5)
+        for label in measures:measures[label].append(ratio[(labels==label)&valid])
+        idx=int(np.argmax(np.where(valid,ratio,0)))
+        worst_edges.append({'action':name,'frame':frame,'ratio':float(ratio[idx]),
+                            'region':str(labels[idx]),'vertices':edges[idx].tolist(),
+                            'rest_positions':P[edges[idx]].tolist(),
+                            'weights':[{mesh.vertex_groups[g.group].name:g.weight for g in mesh.data.vertices[i].groups} for i in edges[idx]],
+                            'rest_length':float(rest_lengths[idx]),
+                            'length_change':float(lengths[idx]-rest_lengths[idx])})
+        for ids in seam_vertices.values():
+            if len(ids)>1:seam_gap=max(seam_gap,float(np.linalg.norm(coordinates[ids]-coordinates[ids[0]],axis=1).max()))
+    stretch[name]={label:{'max':float(np.concatenate(values).max()),
+                          'p99':float(np.quantile(np.concatenate(values),.99)),
+                          'min':float(np.concatenate(values).min())}
+                   for label,values in measures.items() if len(values[0])}
+rig.animation_data.action=None
+reset();scene.frame_set(1)
+print('STRETCH '+json.dumps(stretch),flush=True)
+
 # Keep original UVs, triangles and materials; resize only embedded image maps.
 textures=[]
 for img in bpy.data.images:
@@ -409,14 +606,18 @@ bpy.ops.export_scene.gltf(filepath=str(out),export_format='GLB',use_selection=Tr
 for track in rig.animation_data.nla_tracks:track.mute=True
 report={'bones':len(rest),'bone_landmarks':rest,'measurements':landmarks,'weight_method':heat,
         'regions':regions,'max_seam_weight_difference':seam_error,'max_influences':4,
+        'stretch':stretch,'worst_edges':sorted(worst_edges,key=lambda e:e['ratio'],reverse=True)[:12],
+        'max_deformed_seam_gap':seam_gap,'validation_frame_step':6,
         'textures':textures,'actions':peaks,'bytes':out.stat().st_size,
-        'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
+        'heat_limb_blend':.65,'smoothing_iterations':5,'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
 (review/'report.json').write_text(json.dumps(report,indent=2))
-assert out.stat().st_size<8_000_000, 'Web asset exceeds 8 MB budget'
+assert out.stat().st_size<5_000_000, 'Web asset exceeds 5 MB budget'
+marker('POSES done')
+marker('WEIGHTS done')
 marker('WEB done')
 print(json.dumps({k:report[k] for k in ['bones','regions','max_seam_weight_difference','bytes']}),flush=True)
 
-if opts.renders:
+if opts.renders and (not opts.skip_stills or opts.video):
     # Headless EEVEE uses the runner's software EGL context.
     scene.render.engine='BLENDER_EEVEE_NEXT'
     scene.eevee.taa_render_samples=32
@@ -432,15 +633,39 @@ if opts.renders:
         light=bpy.context.object;light.data.energy=power;light.data.shape='DISK';light.data.size=size;aim(light,(cx,0,0))
     bpy.ops.mesh.primitive_plane_add(size=200,location=(0,0,z0-.012))
     floor=bpy.context.object;floor.name='Review floor'
-    mat=bpy.data.materials.new('Review warm grey');mat.diffuse_color=(.24,.22,.24,1);floor.data.materials.append(mat)
+    mat=bpy.data.materials.new('Review neutral grey');mat.diffuse_color=(.24,.24,.24,1);floor.data.materials.append(mat)
     bpy.ops.object.camera_add(location=(cx,-6,.25))
     camera=bpy.context.object;camera.data.type='ORTHO';camera.data.ortho_scale=H*1.42
     aim(camera,(cx+.055*H,0,z0+.53*H));scene.camera=camera
-    for name in peaks:
-        rig.animation_data.action=bpy.data.actions[name]
-        scene.frame_set(19);bpy.context.view_layer.update()
-        scene.render.filepath=str(review/(name+'.png'))
-        bpy.ops.render.render(write_still=True)
+    if not opts.skip_stills:
+        for name in peaks:
+            rig.animation_data.action=bpy.data.actions[name]
+            scene.frame_set(19);bpy.context.view_layer.update()
+            scene.render.filepath=str(review/(name+'.png'))
+            bpy.ops.render.render(write_still=True)
     rig.animation_data.action=bpy.data.actions['idle'];scene.frame_set(19)
     bpy.ops.wm.save_as_mainfile(filepath=str(review/'user-fox.blend'))
     print('Blender action renders complete',flush=True)
+
+    if opts.video:
+        video_dir=phase.parent/'video'
+        video_dir.mkdir(parents=True,exist_ok=True)
+        scene.eevee.taa_render_samples=16
+        scene.render.fps=24
+        for name in ['wave','walk']:
+            sequence=video_dir/(name+'-frames')
+            sequence.mkdir(exist_ok=True)
+            action=bpy.data.actions[name]
+            rig.animation_data.action=action
+            period=(action.frame_range[1]-1)/30
+            for i in range(86):
+                # Actions remain authored at 30fps; video samples at 24fps.
+                sample=1+(i/24 % period)*30
+                scene.frame_set(int(sample),subframe=sample-int(sample))
+                scene.render.filepath=str((sequence/f'{i:04d}.png').resolve())
+                bpy.ops.render.render(write_still=True)
+            subprocess.run(['/usr/bin/ffmpeg','-y','-framerate','24','-i',
+                            str(sequence/'%04d.png'),'-c:v','libx264','-crf','19',
+                            '-pix_fmt','yuv420p','-movflags','+faststart',
+                            str(video_dir/(name+'.mp4'))],check=True)
+        marker('VIDEO done')
