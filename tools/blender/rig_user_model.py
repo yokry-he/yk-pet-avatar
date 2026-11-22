@@ -6,9 +6,9 @@ Usage: blender -b --factory-startup --python tools/blender/rig_user_model.py --
 
 The source is never copied or modified. Landmark proportions below are small
 anatomical priors for this upright chibi, applied to measured vertex clusters.
-Heat weights are solved on a closed voxel proxy and transferred to the source
-with nearest-face interpolation. Anatomical geodesic blends, surface smoothing
-and identical UV-seam weights protect the exclusive ear/head/tail domains.
+Shoulder cut planes and arm capsules isolate the torso. Baked fractional
+rotation helpers preserve volume with linear blend skinning. Geodesic tail
+segmentation and identical seam weights protect exclusive ear/head/tail domains.
 Four influences maximum, no geometry reduction. All nine looping actions have a readable pose
 at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
 A landmark/weight/export report and editable review blend accompany the renders.
@@ -167,13 +167,16 @@ for sign, side in [(-1,'R'),(1,'L')]:
     arm = P[arm_seeds[side]&(~tail_mask)]
     outer = arm[(arm[:,0]-cx)*sign>np.quantile((arm[:,0]-cx)*sign,.78)]
     paw = outer.mean(axis=0)
-    shoulder = np.array([cx+sign*.135*H,body_y, z0+.386*H])
+    shoulder = np.array([cx+sign*.175*H,body_y-.065*H, z0+.335*H])
     elbow = shoulder*.42+paw*.58
     wrist = shoulder*.12+paw*.88
     palm_end = paw+(paw-shoulder)*.10
     bone('shoulder.'+side,(cx+sign*.07*H,body_y,z0+.38*H),shoulder,'chest')
     bone('upper_arm.'+side,shoulder,elbow,'shoulder.'+side)
-    bone('forearm.'+side,elbow,wrist,'upper_arm.'+side)
+    bone('upper_arm.twist.'+side,shoulder,elbow,'upper_arm.'+side)
+    bone('shoulder.helper.'+side,shoulder,elbow,'shoulder.'+side)
+    bone('armpit.helper.'+side,shoulder,elbow,'shoulder.'+side)
+    bone('forearm.'+side,elbow,wrist,'upper_arm.twist.'+side)
     bone('hand.'+side,wrist,palm_end,'forearm.'+side)
     foot_cluster = feet[(feet[:,0]-cx)*sign>0]
     fx = float(np.median(foot_cluster[:,0]))
@@ -183,6 +186,7 @@ for sign, side in [(-1,'R'),(1,'L')]:
     ankle = (fx,fy+.025*H,z0+.045*H)
     toe = (fx,float(np.quantile(foot_cluster[:,1],.12)),z0+.025*H)
     bone('thigh.'+side,hip,knee,'hips')
+    bone('hip.helper.'+side,hip,knee,'hips')
     bone('shin.'+side,knee,ankle,'thigh.'+side)
     bone('foot.'+side,ankle,toe,'shin.'+side)
 # A curved tail chain follows median horizontal slices, from rump to tip.
@@ -199,55 +203,10 @@ for i in range(4):
     bone('tail.'+str(i+1),tail_nodes[i],tail_nodes[i+1],'hips' if i==0 else 'tail.'+str(i))
 bpy.ops.object.mode_set(mode='OBJECT')
 
-# A closed, welded voxel proxy gives bone heat a continuous manifold instead
-# of the source's UV-split reconstruction patches. Transfer interpolated surface
-# weights back without changing a single source vertex, UV or material.
-proxy = mesh.copy()
-proxy.data = mesh.data.copy()
-proxy.name = 'Closed heat-weight proxy'
-bpy.context.collection.objects.link(proxy)
-proxy.vertex_groups.clear()
-proxy.modifiers.clear()
-active(proxy)
-proxy.data.remesh_voxel_size = .012 * H
-proxy.data.use_remesh_preserve_volume = True
-bpy.ops.object.voxel_remesh()
-# Remove voxel stair steps before solving the Laplacian heat equation.
-relax = proxy.modifiers.new('Proxy surface relaxation', 'SMOOTH')
-relax.factor = .65
-relax.iterations = 4
-bpy.ops.object.modifier_apply(modifier=relax.name)
-proxy_vertices = len(proxy.data.vertices)
-rig.select_set(True)
-bpy.context.view_layer.objects.active = rig
-heat_weights = [{} for _ in P]
-heat = 'closed voxel proxy automatic + nearest-face interpolated transfer'
-try:
-    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
-    coverage = sum(bool(v.groups) for v in proxy.data.vertices) / proxy_vertices
-    if coverage < .99:
-        raise RuntimeError(f'Heat coverage only {coverage:.1%}')
-    active(mesh)
-    # Destination groups must exist before Data Transfer can match by name.
-    for group in proxy.vertex_groups:
-        if group.name not in mesh.vertex_groups:mesh.vertex_groups.new(name=group.name)
-    transfer = mesh.modifiers.new('Interpolated proxy skin', 'DATA_TRANSFER')
-    transfer.object = proxy
-    transfer.use_vert_data = True
-    transfer.data_types_verts = {'VGROUP_WEIGHTS'}
-    transfer.vert_mapping = 'POLYINTERP_NEAREST'
-    transfer.layers_vgroup_select_src = 'ALL'
-    transfer.layers_vgroup_select_dst = 'NAME'
-    bpy.ops.object.modifier_apply(modifier=transfer.name)
-    for v in mesh.data.vertices:
-        heat_weights[v.index] = {mesh.vertex_groups[g.group].name:g.weight for g in v.groups if g.weight > 1e-7}
-    if sum(bool(w) for w in heat_weights) < .99*len(P):
-        raise RuntimeError('Incomplete transferred weights')
-except RuntimeError as exc:
-    heat = 'voxel heat failed; geodesic capsule fallback: ' + str(exc)
-    heat_weights = [{} for _ in P]
-    print(heat, flush=True)
-bpy.data.objects.remove(proxy, do_unlink=True)
+# Geometry domains replace proxy heat: nearby belly/paw surfaces must never
+# exchange weights. No topology, UV or material changes are made.
+heat = 'rest-pose shoulder cut plane AND arm capsule; analytic joint blends'
+proxy_vertices = 0
 mesh.parent=rig
 if not any(m.type=='ARMATURE' for m in mesh.modifiers):
     mod=mesh.modifiers.new('Fox skin','ARMATURE');mod.object=rig
@@ -275,6 +234,7 @@ def capsules(p,names,soft=.035):
 regions={'head':0,'ears':0,'tail':0,'body':0}
 vertex_regions=[]
 weight_rows=[]
+arm_geometry={side:{} for side in ['L','R']}
 for i,p in enumerate(P):
     x,y,z=p
     if tail_mask[i]:
@@ -301,66 +261,65 @@ for i,p in enumerate(P):
             weights={'head':1};regions['head']+=1
             vertex_regions.append('head')
     else:
-        torso=capsules(p,['hips','chest'],.10)
-        # Smooth neck attachment below the rigid face, away from the eyes.
-        hblend=smooth(neck_z-.09*H,neck_z+.005*H,z)
-        if hblend:
-            torso={n:w*(1-hblend) for n,w in torso.items()};torso['head']=hblend
+        # The torso field depends only on height, never on arm proximity.
+        spine_blend=smooth(z0+.23*H,z0+.32*H,z)
+        chest_blend=smooth(z0+.32*H,z0+.38*H,z)
+        torso={'hips':1-spine_blend,'spine':spine_blend*(1-chest_blend),
+               'chest':spine_blend*chest_blend}
+        neck_blend=smooth(neck_z-.065*H,neck_z-.025*H,z)
+        head_blend=smooth(neck_z-.035*H,neck_z+.005*H,z)
+        if neck_blend:
+            torso={n:w*(1-neck_blend) for n,w in torso.items()}
+            torso['neck']=neck_blend*(1-head_blend)
+            torso['head']=neck_blend*head_blend
         sign=1 if x>cx else -1;side='L' if sign==1 else 'R'
-        limb=['upper_arm.'+side,'forearm.'+side,'hand.'+side]
-        # Blend across geodesic shoulder distances, never across the spatial
-        # gap between a paw and the curled tail, and include the whole mitten.
-        delta=d_core[i]-d_arms[side][i]
-        if not math.isfinite(delta):
-            delta=(abs(x-cx)-.22*H)
-        armblend=smooth(-.095*H,.095*H,delta)
-        armblend*=1-smooth(neck_z-.095*H,neck_z-.025*H,z)
-        legblend=1-smooth(z0+.13*H,z0+.235*H,z)
-        if legblend>0:
-            # Blend the two thighs through the crotch instead of changing the
-            # controlling leg abruptly at x=center. Distal bones stay below it.
-            left=smooth(-.035*H,.035*H,x-cx)
-            legs={}
-            distal=1-smooth(z0+.10*H,z0+.17*H,z)
-            for leg_side,side_weight in [('L',left),('R',1-left)]:
-                names=['thigh.'+leg_side,'shin.'+leg_side,'foot.'+leg_side]
-                row=capsules(p,names,.055)
-                auto={n:heat_weights[i].get(n,0) for n in names}
-                total=sum(auto.values())
-                if total>1e-6:row={n:.65*auto[n]/total+.35*row.get(n,0) for n in names}
-                row={n:w*distal for n,w in row.items()}
-                row['thigh.'+leg_side]=row.get('thigh.'+leg_side,0)+1-distal
-                for n,w in row.items():legs[n]=w*side_weight
-            torso={n:w*(1-legblend) for n,w in torso.items()}
-            for n,w in legs.items():torso[n]=torso.get(n,0)+w*legblend
-        # Heat supplies the distribution *inside* a limb; geodesic blends
-        # control how much of that limb reaches the torso. Unrestricted heat
-        # can jump between nearby chest/paw faces on this fused reconstruction.
-        automatic={n:heat_weights[i].get(n,0) for n in limb}
-        auto_total=sum(automatic.values())
-        limb_weights=capsules(p,limb,.07)
-        if auto_total>1e-6:
-            limb_weights={n:.65*automatic[n]/auto_total+.35*limb_weights.get(n,0) for n in limb}
-        distal_blend=smooth(.60,.95,armblend)
-        moved=sum(w for n,w in limb_weights.items() if n!='upper_arm.'+side)*(1-distal_blend)
-        limb_weights={n:w if n=='upper_arm.'+side else w*distal_blend for n,w in limb_weights.items()}
-        limb_weights['upper_arm.'+side]=limb_weights.get('upper_arm.'+side,0)+moved
-        # Free one influence slot before the hand starts contributing. This
-        # prevents top-four truncation from dropping a large shoulder weight.
-        hand_blend=smooth(.35,.8,armblend)
-        hand_weight=limb_weights.get('hand.'+side,0)*(1-hand_blend)
-        limb_weights['hand.'+side]=limb_weights.get('hand.'+side,0)*hand_blend
-        limb_weights['forearm.'+side]=limb_weights.get('forearm.'+side,0)+hand_weight
-        if armblend>0:
-            hip_to_chest=smooth(0,.25,armblend)
-            moved=torso.get('hips',0)*hip_to_chest
-            torso['hips']=torso.get('hips',0)-moved
-            torso['chest']=torso.get('chest',0)+moved
-        weights={n:w*(1-armblend) for n,w in torso.items()}
-        if armblend:
-            for n,w in limb_weights.items():weights[n]=weights.get(n,0)+w*armblend
-        # Make both sides of the fused rump attachment follow the hips; the
-        # exclusive tail chain begins with an unanimated root at this socket.
+        # At the crotch retain the hips. Distal groups never cross the midline.
+        leg_blend=1-smooth(z0+.13*H,z0+.225*H,z)
+        if leg_blend:
+            lateral=1-(1-smooth(.015*H,.075*H,abs(x-cx)))*smooth(z0+.09*H,z0+.17*H,z)
+            leg_blend*=lateral
+            shin_blend=1-smooth(z0+.075*H,z0+.125*H,z)
+            foot_blend=1-smooth(z0+.035*H,z0+.065*H,z)
+            legs={'thigh.'+side:1-shin_blend,
+                  'shin.'+side:shin_blend*(1-foot_blend),
+                  'foot.'+side:shin_blend*foot_blend}
+            # Two small rotations at the hip replace one abrupt hips/thigh mix.
+            thigh_mix=smooth(.35,1.,leg_blend)
+            helper_mix=smooth(0.,.7,leg_blend)*(1-thigh_mix)
+            torso={n:w*(1-helper_mix-thigh_mix) for n,w in torso.items()}
+            torso['hip.helper.'+side]=helper_mix
+            for n,w in legs.items():torso[n]=w*thigh_mix
+        shoulder,elbow=np.array(rest['upper_arm.'+side])
+        wrist,palm_end=np.array(rest['hand.'+side])
+        direction=palm_end-shoulder
+        length=np.linalg.norm(direction);direction/=length
+        plane=float(np.dot(p-shoulder,direction))
+        radius=distance(p,shoulder,palm_end)
+        # Full arm domain is on the outside of the shoulder plane and inside
+        # its capsule. The only chest/arm mix is the short shoulder socket.
+        capsule=1-smooth(.13*H,.16*H,radius)
+        arm_blend=smooth(-.012*H,.045*H,plane)*capsule
+        arm_blend*=smooth(.155*H,.205*H,abs(x-cx))
+        arm_blend*=1-(1-smooth(z0+.215*H,z0+.275*H,z))*(1-smooth(.19*H,.22*H,abs(x-cx)))
+        arm_blend*=1-smooth(neck_z-.065*H,neck_z-.005*H,z)
+        arm_geometry[side][i]=(plane,radius,arm_blend)
+        u=float(np.dot(p-shoulder,direction))/length
+        fore=smooth(.48,.68,u);hand=smooth(.82,.98,u)
+        limb={'upper_arm.'+side:1-fore,'forearm.'+side:fore*(1-hand),'hand.'+side:fore*hand}
+        # Piecewise rotations give LBS an intermediate round socket, with
+        # no chest influence on the full arm. Only this narrow band blends.
+        upper=limb.pop('upper_arm.'+side)
+        twist=smooth(.10,.50,u)
+        limb['upper_arm.'+side]=upper*(1-twist)
+        limb['upper_arm.twist.'+side]=upper*twist
+        full=smooth(.45,1.,arm_blend)
+        half=smooth(.15,.65,arm_blend)*(1-full)
+        quarter=smooth(0.,.35,arm_blend)*(1-half-full)
+        weights={n:w*(1-quarter-half-full) for n,w in torso.items()}
+        weights['armpit.helper.'+side]=quarter
+        weights['shoulder.helper.'+side]=half
+        for n,w in limb.items():weights[n]=w*full
+        # Tail socket is fixed to hips, matching the first tail bone.
         rump=smooth(0,.10*H,d_tail_surface[i])
         weights={n:w*rump for n,w in weights.items()}
         weights['hips']=weights.get('hips',0)+1-rump
@@ -368,81 +327,8 @@ for i,p in enumerate(P):
         vertex_regions.append('body')
     weight_rows.append(weights)
 
-# Smooth shoulder, hip and neck transitions on the welded surface graph.
-# Rigid face and exclusive ear/tail chains are never mixed with body groups.
-# Surface patches are irregularly tessellated. A spatial kernel first removes
-# tiny heat discontinuities without welding or changing the rendered geometry.
-body_ids=[i for i,r in enumerate(vertex_regions) if r=='body']
-kernels={}
-for i in body_ids:
-    neighbours=[(j,math.exp(-(d/(.045*H))**2)) for _,j,d in kd.find_range(Vector(P[i]),.075*H)
-                if vertex_regions[j]=='body']
-    total=sum(w for _,w in neighbours)
-    kernels[i]=[(j,w/total) for j,w in neighbours]
-for iteration in range(3):
-    updated=list(weight_rows)
-    for i,neighbours in kernels.items():
-        row={}
-        for j,k in neighbours:
-            for n,w in weight_rows[j].items():row[n]=row.get(n,0)+k*w
-        updated[i]=row
-    weight_rows=updated
-for iteration in range(5):
-    updated=[]
-    for i,w in enumerate(weight_rows):
-        if vertex_regions[i]!='body':
-            updated.append(w);continue
-        neighbours=[j for j,_ in adjacency[i] if vertex_regions[j]=='body']
-        if not neighbours:
-            updated.append(w);continue
-        row={n:.55*v for n,v in w.items()}
-        for j in neighbours:
-            for n,v in weight_rows[j].items():row[n]=row.get(n,0)+.45*v/len(neighbours)
-        # Restore the smooth attachment to the fully rigid facial region.
-        hblend=smooth(neck_z-.09*H,neck_z+.005*H,P[i,2])
-        total=sum(v for n,v in row.items() if n!='head')
-        if total>1e-8:
-            row={n:v/total*(1-hblend) for n,v in row.items() if n!='head'}
-            if hblend:row['head']=hblend
-        updated.append(row)
-    weight_rows=updated
-
-# Reserve four stable influence slots at each joint before truncation. A
-# changing fifth influence otherwise causes an abrupt jump on short edges.
-for i,row in enumerate(weight_rows):
-    if vertex_regions[i]!='body':continue
-    side='L' if P[i,0]>cx else 'R'
-    other='R' if side=='L' else 'L'
-    row=dict(row)
-    for part in ['upper_arm','forearm','hand']:
-        row['chest']=row.get('chest',0)+row.pop(part+'.'+other,0)
-    arm_names=[part+'.'+side for part in ['upper_arm','forearm','hand']]
-    arm_total=sum(row.get(n,0) for n in arm_names)
-    if P[i,2]<z0+.26*H:
-        lower=smooth(z0+.16*H,z0+.26*H,P[i,2])
-        removed=0.
-        for n in arm_names:
-            removed+=row.get(n,0)*(1-lower)
-            if n in row:row[n]*=lower
-        row['chest']=row.get('chest',0)+removed
-        arm_total*=lower
-    if arm_total>1e-8:
-        for n in list(row):
-            if n in ['hips','spine','neck'] or n.startswith(('thigh.','shin.','foot.')):
-                row['chest']=row.get('chest',0)+row.pop(n)
-        if row.get('head',0)>0:
-            row['forearm.'+side]=row.get('forearm.'+side,0)+row.pop('hand.'+side,0)
-    elif P[i,2]<z0+.18*H:
-        for n in list(row):
-            if n=='chest' or n.startswith(('upper_arm.','forearm.','hand.')):
-                row['hips']=row.get('hips',0)+row.pop(n)
-        # Distal leg groups never cross the crotch onto the other leg.
-        for part in ['shin','foot']:
-            row['thigh.'+other]=row.get('thigh.'+other,0)+row.pop(part+'.'+other,0)
-        if row.get('thigh.'+other,0)>.005:
-            row['shin.'+side]=row.get('shin.'+side,0)+row.pop('foot.'+side,0)
-    weight_rows[i]={n:w for n,w in row.items() if w>1e-8}
-
+# Do not spatially smooth across domains: that was the cause of chest skin
+# being pulled into the waving paw. Each joint field above is already smooth.
 # Exact coincident UV seams get identical normalised weights after smoothing.
 seam_vertices={}
 for i,p in enumerate(P):seam_vertices.setdefault(tuple(round(c,6) for c in p),[]).append(i)
@@ -453,7 +339,7 @@ for ids in seam_vertices.values():
         for n,w in weight_rows[i].items():row[n]=row.get(n,0)+w/len(ids)
     for i in ids:weight_rows[i]=row
 for i,weights in enumerate(weight_rows):
-    weights=sorted(weights.items(),key=lambda kv:kv[1],reverse=True)[:4]
+    weights=sorted(((n,w) for n,w in weights.items() if w>=.02),key=lambda kv:kv[1],reverse=True)[:4]
     total=sum(w for _,w in weights)
     for n,w in weights:
         if w>1e-7:groups[n].add([i],w/total,'REPLACE')
@@ -494,14 +380,14 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
                       ('nod',2.4),('shake',2.4),('jump',2.4),('walk',1.2),('sleep',3.6)]:
     action=bpy.data.actions.new(name);rig.animation_data.action=action
     end=round(duration*30)+1
-    for frame in list(range(1,end,3))+[end]:
+    for frame in range(1,end+1):
         t=(frame-1)/30;ph=t/duration*2*math.pi
         reset()
         # Relax the original A-pose down to the flanks in every neutral clip.
         for sign,side in [(-1,'R'),(1,'L')]:
             rotate('upper_arm.'+side,(0,1,0),sign*.32)
         rotate('chest',(0,1,0),.018*math.sin(ph))
-        rig.pose.bones['spine'].scale=(1+.009*math.sin(ph),1+.009*math.sin(ph),1+.009*math.sin(ph))
+        # Keep the cloud/belly free of animated scale.
         rotate('head',(0,1,0),.025*math.sin(ph))
         for j in range(2,5):rotate('tail.'+str(j),(0,0,1),.035*math.sin(ph-.45*j))
         for side,off in [('L',0),('R',.7)]:
@@ -513,17 +399,17 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         gesture=rise*fall
         if name=='wave':
             rotate('upper_arm.R',(0,1,0),-.32+(2.35+.16*math.sin(3*ph))*gesture)
-            shift('shoulder.R',(-.07*H*gesture,-.12*H*gesture,.015*H*gesture))
+            shift('shoulder.R',(-.005*H*gesture,-.025*H*gesture,.025*H*gesture))
             rotate('forearm.R',(0,1,0),(.12+.24*math.sin(3*ph))*gesture)
             rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
                 rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.00*gesture))
-                shift('shoulder.'+side,(sign*.12*H*gesture,-.12*H*gesture,.12*H*gesture))
+                shift('shoulder.'+side,(sign*.005*H*gesture,-.018*H*gesture,.028*H*gesture))
                 rotate('forearm.'+side,(0,1,0),sign*.10*gesture)
-                rig.pose.bones['upper_arm.'+side].scale=(1,1+.25*gesture,1)
-                rig.pose.bones['forearm.'+side].scale=(1,1+.10*gesture,1)
+                # No axial stretching: preserve the original round arm.
+                
             shift('root',(0,0,.035*H*gesture))
             rotate('head',(1,0,0),-.07*gesture)
         elif name=='happy':
@@ -531,7 +417,7 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             shift('root',(0,0,.085*H*bounce))
             rotate('head',(0,1,0),.09*math.sin(ph))
             for sign,side in [(-1,'R'),(1,'L')]:rotate('upper_arm.'+side,(0,1,0),sign*(.25-.50*bounce))
-        elif name=='nod':rotate('head',(1,0,0),.40*math.sin(ph))
+        elif name=='nod':rotate('head',(1,0,0),.32*math.sin(ph))
         elif name=='shake':rotate('head',(0,0,1),.42*math.sin(ph))
         elif name=='jump':
             lift=math.sin(math.pi*min(t/1.2,1))**2 if t<=1.2 else 0
@@ -544,8 +430,8 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             # Offset gives a leg-forward silhouette at the shared .6s sample.
             swing=math.cos(ph)
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('thigh.'+side,(1,0,0),sign*.55*swing)
-                rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.50)
+                rotate('thigh.'+side,(1,0,0),sign*.42*swing)
+                rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.40)
                 arm_rotation('upper_arm.'+side,sign*.24,-sign*.40*swing)
                 rotate('foot.'+side,(1,0,0),-sign*.12*swing)
             shift('root',(.018*H*math.sin(ph),0,.018*H*(1-math.cos(ph*2))))
@@ -555,13 +441,33 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             rotate('neck',(1,0,0),.08)
             rotate('head',(1,0,0),.24+.015*math.sin(ph))
             for side in ['L','R']:rotate('ear.'+side,(1,0,0),.15)
-        if name in ['wave','success'] and gesture>.01:
-            bpy.context.view_layer.update()
-            for side in (['R'] if name=='wave' else ['L','R']):
-                hand=rig.pose.bones['hand.'+side]
-                desired=hand.bone.matrix_local.copy()
-                desired.translation=hand.matrix.translation
-                hand.matrix=desired
+        head=rig.pose.bones['head']
+        neck=rig.pose.bones['neck']
+        head_q=head.rotation_quaternion.copy()
+        head_basis=head.bone.matrix_local.to_quaternion()
+        neck_basis=neck.bone.matrix_local.to_quaternion()
+        shared=head_basis @ Quaternion((1,0,0,0)).slerp(head_q,.45) @ head_basis.inverted()
+        neck.rotation_quaternion=neck.rotation_quaternion @ neck_basis.inverted() @ shared @ neck_basis
+        head.rotation_quaternion=Quaternion((1,0,0,0)).slerp(head_q,.55)
+        # Direct visual keys are the baked result of fractional Copy Rotation.
+        # There are no live constraints for the glTF/three.js player to solve.
+        for side in ['L','R']:
+            upper=rig.pose.bones['upper_arm.'+side]
+            original=upper.rotation_quaternion.copy()
+            identity=Quaternion((1,0,0,0))
+            rig.pose.bones['shoulder.helper.'+side].rotation_quaternion=identity.slerp(original,.50)
+            rig.pose.bones['armpit.helper.'+side].rotation_quaternion=identity.slerp(original,.25)
+            shoulder=rig.pose.bones['shoulder.'+side]
+            translation=shoulder.bone.matrix_local.to_quaternion() @ shoulder.location
+            shift('shoulder.helper.'+side,-.50*translation)
+            shift('armpit.helper.'+side,-.75*translation)
+            roll=Quaternion((original.w,0,original.y,0))
+            if roll.magnitude<1e-7:roll=identity.copy()
+            else:roll.normalize()
+            half_roll=identity.slerp(roll,.5)
+            upper.rotation_quaternion=original @ roll.inverted() @ half_roll
+            rig.pose.bones['upper_arm.twist.'+side].rotation_quaternion=half_roll
+            rig.pose.bones['hip.helper.'+side].rotation_quaternion=identity.slerp(rig.pose.bones['thigh.'+side].rotation_quaternion,.5)
         for pb in rig.pose.bones:
             pb.keyframe_insert('location',frame=frame,group=pb.name)
             pb.keyframe_insert('rotation_quaternion',frame=frame,group=pb.name)
@@ -578,56 +484,91 @@ reset()
 scene.frame_set(1)
 marker('RIG done')
 
-# Evaluate the actual skinned surface throughout every exported action. Tiny
-# degenerate edges are excluded from ratios but UV-seam distances are checked.
+# Measure every frame on the evaluated mesh (LBS, exactly as exported).
 edges=np.array([e.vertices[:] for e in mesh.data.edges],dtype=int)
 rest_lengths=np.linalg.norm(P[edges[:,1]]-P[edges[:,0]],axis=1)
 valid=rest_lengths>H*1e-5
-labels=[]
-for a,b in edges:
-    kinds={vertex_regions[a],vertex_regions[b]}
-    z=(P[a,2]+P[b,2])/2
-    if kinds=={'head'}:label='rigid_face'
-    elif 'ears' in kinds:label='ears'
-    elif 'tail' in kinds:label='tail'
+vertex_labels=[]
+for i,(x,y,z) in enumerate(P):
+    kind=vertex_regions[i]
+    side='L' if x>cx else 'R'
+    geometry=arm_geometry[side].get(i,(0,0,0))
+    if kind=='tail':label='tail'
+    elif kind=='ears':label='ears'
+    elif kind=='head':label='face'
+    elif geometry[2]>.98:label='arm'
+    elif geometry[2]>.001:label='shoulders'
     elif z>neck_z-.065*H:label='neck'
-    elif z<z0+.245*H:label='hips_legs'
-    else:label='shoulders_torso'
-    labels.append(label)
-labels=np.array(labels)
-stretch={}
-worst_edges=[]
-seam_gap=0.
+    elif z<z0+.225*H:label='crotch'
+    elif y<body_y-.10*H and abs(x-cx)<.15*H and z<z0+.36*H:label='belly'
+    else:label='chest_sides'
+    vertex_labels.append(label)
+# Edges at region boundaries are included in both domains; no outlier is hidden.
+vertex_labels=np.array(vertex_labels)
+region_names=['belly','chest_sides','shoulders','arm','crotch','neck','face','ears','tail']
+region_edges={label:valid & (((vertex_labels[edges[:,0]]==label)&(vertex_labels[edges[:,1]]==label)) if label in ['face','belly','arm'] else ((vertex_labels[edges[:,0]]==label)|(vertex_labels[edges[:,1]]==label))) for label in region_names}
+labels=np.array([vertex_labels[a] if vertex_labels[a]==vertex_labels[b] else vertex_labels[a]+'/'+vertex_labels[b] for a,b in edges])
+# Fixed material slices, measured in the controlling bone's local transverse
+# plane. PCA eigenvectors choose principal axes; extents are max-min projections.
+slices=[]
+def principal_extent(points):
+    points=points[:,:,[0,2]] if points.ndim==3 else points[:,[0,2]]
+    centred=points-points.mean(axis=0)
+    _,axes=np.linalg.eigh(centred.T@centred/max(1,len(points)))
+    ext=np.ptp(centred@axes,axis=0)
+    return sorted(float(v) for v in ext)
+for side in ['L','R']:
+    for part in ['upper_arm','forearm']:
+        name=part+'.'+side
+        a,b=np.array(rest[name]);axis=b-a;length=np.linalg.norm(axis);axis/=length
+        u=(P-a)@axis/length
+        radial=np.linalg.norm(P-a-u[:,None]*length*axis,axis=1)
+        arm_ids=np.array([arm_geometry[side].get(i,(0,0,0))[2]>.98 for i in range(len(P))])
+        inv=np.array(rig.data.bones[name].matrix_local.inverted())
+        local=(np.c_[P,np.ones(len(P))]@inv.T)[:,:3]
+        for fraction in [.25,.50,.75]:
+            ids=np.flatnonzero(arm_ids&(abs(u-fraction)<.16)&(radial<.13*H))
+            if len(ids)<8:continue
+            ext=principal_extent(local[ids])
+            if ext[0]<H*.005:continue
+            slices.append({'bone':name,'fraction':fraction,'ids':ids,'rest_extents':ext})
+stretch={};thickness={};worst_edges=[];region_worst={};seam_gap=0.
 depsgraph=bpy.context.evaluated_depsgraph_get()
+seam_pairs=np.array([(ids[0],i) for ids in seam_vertices.values() for i in ids[1:]],dtype=int)
 for name in peaks:
     rig.animation_data.action=bpy.data.actions[name]
     end=int(rig.animation_data.action.frame_range[1])
-    samples=sorted(set(list(range(1,end+1,6))+[19,end]))
-    measures={label:[] for label in set(labels)}
-    for frame in samples:
+    measures={label:[] for label in region_names}
+    slice_stats=[dict(bone=sl['bone'],fraction=sl['fraction'],vertices=len(sl['ids']),rest_extents=sl['rest_extents'],min_ratio=1e9) for sl in slices]
+    for frame in range(1,end+1):
         scene.frame_set(frame);bpy.context.view_layer.update()
         evaluated=mesh.evaluated_get(depsgraph)
-        coordinates=np.array([v.co[:] for v in evaluated.data.vertices])
+        coords=np.empty(len(P)*3,dtype=np.float32)
+        evaluated.data.vertices.foreach_get('co',coords);coordinates=coords.reshape((-1,3))
         lengths=np.linalg.norm(coordinates[edges[:,1]]-coordinates[edges[:,0]],axis=1)
         ratio=lengths/np.maximum(rest_lengths,H*1e-5)
-        for label in measures:measures[label].append(ratio[(labels==label)&valid])
+        for label,mask in region_edges.items():
+            measures[label].append(ratio[mask])
+            if np.any(mask):
+                idx=int(np.argmax(np.where(mask,ratio,0)))
+                if label not in region_worst or ratio[idx]>region_worst[label]['ratio']:
+                    region_worst[label]={'action':name,'frame':frame,'ratio':float(ratio[idx]),'vertices':edges[idx].tolist(),'rest_positions':P[edges[idx]].tolist(),'weights':[{mesh.vertex_groups[g.group].name:g.weight for g in mesh.data.vertices[i].groups} for i in edges[idx]]}
         idx=int(np.argmax(np.where(valid,ratio,0)))
-        worst_edges.append({'action':name,'frame':frame,'ratio':float(ratio[idx]),
-                            'region':str(labels[idx]),'vertices':edges[idx].tolist(),
-                            'rest_positions':P[edges[idx]].tolist(),
-                            'weights':[{mesh.vertex_groups[g.group].name:g.weight for g in mesh.data.vertices[i].groups} for i in edges[idx]],
-                            'rest_length':float(rest_lengths[idx]),
-                            'length_change':float(lengths[idx]-rest_lengths[idx])})
-        for ids in seam_vertices.values():
-            if len(ids)>1:seam_gap=max(seam_gap,float(np.linalg.norm(coordinates[ids]-coordinates[ids[0]],axis=1).max()))
-    stretch[name]={label:{'max':float(np.concatenate(values).max()),
-                          'p99':float(np.quantile(np.concatenate(values),.99)),
-                          'min':float(np.concatenate(values).min())}
-                   for label,values in measures.items() if len(values[0])}
+        worst_edges.append({'action':name,'frame':frame,'ratio':float(ratio[idx]),'region':str(labels[idx]),'vertices':edges[idx].tolist(),'rest_positions':P[edges[idx]].tolist(),'weights':[{mesh.vertex_groups[g.group].name:g.weight for g in mesh.data.vertices[i].groups} for i in edges[idx]],'rest_length':float(rest_lengths[idx])})
+        for sl,stat in zip(slices,slice_stats):
+            inv=np.array(rig.pose.bones[sl['bone']].matrix.inverted())
+            local=(np.c_[coordinates[sl['ids']],np.ones(len(sl['ids']))]@inv.T)[:,:3]
+            ext=principal_extent(local)
+            r=ext[0]/sl['rest_extents'][0]
+            if r<stat['min_ratio']:stat.update(min_ratio=r,frame=frame,deformed_extents=ext)
+        if len(seam_pairs):seam_gap=max(seam_gap,float(np.linalg.norm(coordinates[seam_pairs[:,0]]-coordinates[seam_pairs[:,1]],axis=1).max()))
+    stretch[name]={label:{'max':float(np.concatenate(values).max()),'p99':float(np.quantile(np.concatenate(values),.99)),'min':float(np.concatenate(values).min())} for label,values in measures.items() if len(values[0])}
+    thickness[name]={'min_ratio':min((v['min_ratio'] for v in slice_stats),default=None),'slices':slice_stats,'frames_evaluated':end}
 rig.animation_data.action=None
 reset();scene.frame_set(1)
 assert seam_gap < H*1e-5, 'Skinned UV seams separated'
-assert all(regions['rigid_face']['max']<1.011 for regions in stretch.values()), 'Facial surface deformed'
+# The face interior is rigid; boundary edges are separately included in neck.
+assert not any(pb.constraints for pb in rig.pose.bones)
 print('STRETCH '+json.dumps(stretch),flush=True)
 
 # Keep original UVs, triangles and materials; resize only embedded image maps.
@@ -648,11 +589,19 @@ for track in rig.animation_data.nla_tracks:track.mute=True
 report={'bones':len(rest),'bone_landmarks':rest,'measurements':landmarks,'weight_method':heat,
         'regions':regions,'max_seam_weight_difference':seam_error,'max_influences':4,
         'stretch':stretch,'worst_edges':sorted(worst_edges,key=lambda e:e['ratio'],reverse=True)[:12],
-        'max_deformed_seam_gap':seam_gap,'validation_frame_step':6,
+        'max_deformed_seam_gap':seam_gap,'validation_frame_step':1,
+        'arm_thickness':thickness,'region_worst':region_worst,
+        'metric_method':'All integer frames, evaluated LBS mesh; boundary edges in flexible joints; PCA transverse max-min extents in bone-local fixed material slices',
+        'helpers':'Direct per-frame fractional rotation keys, swing/twist roll split; no constraints',
         'textures':textures,'actions':peaks,'bytes':out.stat().st_size,
-        'heat_limb_blend':.65,'smoothing_iterations':{'spatial':3,'surface':5},'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
+        'heat_limb_blend':0,'smoothing_iterations':{'spatial':0,'surface':0},'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
+before_path=Path('/workspace/yk-pet-art/user-model/before-r3/report.json')
+if before_path.exists():report['before']=json.loads(before_path.read_text())
 (review/'report.json').write_text(json.dumps(report,indent=2))
 assert out.stat().st_size<5_000_000, 'Web asset exceeds 5 MB budget'
+marker('SEGMENT done')
+marker('HELPERS done')
+marker('METRIC done')
 marker('POSES done')
 marker('WEIGHTS done')
 marker('WEB done')
@@ -709,4 +658,8 @@ if opts.renders and (not opts.skip_stills or opts.video):
                             str(sequence/'%04d.png'),'-c:v','libx264','-crf','19',
                             '-pix_fmt','yuv420p','-movflags','+faststart',
                             str(video_dir/(name+'.mp4'))],check=True)
+            subprocess.run(['/usr/bin/ffmpeg','-y','-i',str(video_dir/(name+'.mp4')),
+                            '-filter_complex','fps=12,scale=360:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=3',
+                            '-loop','0',str(video_dir/(name+'.gif'))],check=True)
+            assert (video_dir/(name+'.gif')).stat().st_size<=1_500_000
         marker('VIDEO done')
