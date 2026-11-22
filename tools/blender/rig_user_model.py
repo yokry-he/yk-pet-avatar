@@ -410,8 +410,8 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.90*gesture))
-                shift('shoulder.'+side,(sign*.005*H*gesture,-.018*H*gesture,.028*H*gesture))
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.60*gesture))
+                shift('shoulder.'+side,(sign*.035*H*gesture,-.018*H*gesture,.075*H*gesture))
                 rotate('forearm.'+side,(0,1,0),sign*.10*gesture)
                 # No axial stretching: preserve the original round arm.
                 
