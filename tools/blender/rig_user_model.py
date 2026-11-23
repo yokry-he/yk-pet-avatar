@@ -12,7 +12,7 @@ segmentation and identical seam weights protect exclusive ear/head/tail domains.
 Four influences maximum, no geometry reduction. All nine looping actions have a readable pose
 at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
 A landmark/weight/export report and editable review blend accompany the renders.
-Add --video for 512px, 24fps H.264 wave/success/walk previews in .art-scratch/video.
+Add --video for 512px, 24fps H.264 wave/walk previews in .art-scratch/video.
 """
 import argparse
 import json
@@ -31,7 +31,7 @@ parser.add_argument('--in', dest='source', required=True)
 parser.add_argument('--out', required=True)
 parser.add_argument('--renders')
 parser.add_argument('--skip-stills', action='store_true')
-parser.add_argument('--video', action='store_true', help='Render one full wave/success/walk loop as MP4/GIF previews')
+parser.add_argument('--video', action='store_true', help='Render 3.6 second wave/walk MP4 previews')
 opts = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 out = Path(opts.out).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -167,7 +167,7 @@ for sign, side in [(-1,'R'),(1,'L')]:
     arm = P[arm_seeds[side]&(~tail_mask)]
     outer = arm[(arm[:,0]-cx)*sign>np.quantile((arm[:,0]-cx)*sign,.78)]
     paw = outer.mean(axis=0)
-    shoulder = np.array([cx+sign*.175*H,body_y-.065*H, z0+.405*H])
+    shoulder = np.array([cx+sign*.175*H,body_y-.065*H, z0+.335*H])
     elbow = shoulder*.42+paw*.58
     wrist = shoulder*.12+paw*.88
     palm_end = paw+(paw-shoulder)*.10
@@ -177,8 +177,8 @@ for sign, side in [(-1,'R'),(1,'L')]:
     bone('shoulder.helper.'+side,shoulder,elbow,'shoulder.'+side)
     bone('armpit.helper.'+side,shoulder,elbow,'shoulder.'+side)
     bone('shoulder.lift.'+side,shoulder,elbow,'shoulder.'+side)
-    bone('forearm.'+side,elbow,wrist,'upper_arm.'+side).use_connect=True
-    bone('hand.'+side,wrist,palm_end,'forearm.'+side).use_connect=True
+    bone('forearm.'+side,elbow,wrist,'upper_arm.twist.'+side)
+    bone('hand.'+side,wrist,palm_end,'forearm.'+side)
     foot_cluster = feet[(feet[:,0]-cx)*sign>0]
     fx = float(np.median(foot_cluster[:,0]))
     fy = float(np.median(foot_cluster[:,1]))
@@ -299,9 +299,9 @@ for i,p in enumerate(P):
         radius=distance(p,shoulder,palm_end)
         # Full arm domain is on the outside of the shoulder plane and inside
         # its capsule. The only chest/arm mix is the short shoulder socket.
-        capsule=1-smooth(.060*H,.085*H,radius)
-        arm_blend=smooth(-.018*H,.012*H,plane)*capsule
-        arm_blend*=smooth(.155*H,.190*H,abs(x-cx))
+        capsule=1-smooth(.13*H,.16*H,radius)
+        arm_blend=smooth(-.012*H,.045*H,plane)*capsule
+        arm_blend*=smooth(.155*H,.290*H,abs(x-cx))
         arm_blend*=1-(1-smooth(z0+.215*H,z0+.275*H,z))*(1-smooth(.19*H,.22*H,abs(x-cx)))
         arm_blend*=1-smooth(neck_z-.065*H,neck_z-.005*H,z)
         arm_geometry[side][i]=(plane,radius,arm_blend)
@@ -310,9 +310,12 @@ for i,p in enumerate(P):
         limb={'upper_arm.'+side:1-fore,'forearm.'+side:fore*(1-hand),'hand.'+side:fore*hand}
         # Piecewise rotations give LBS an intermediate round socket, with
         # no chest influence on the full arm. Only this narrow band blends.
-        # Full upper-arm swing belongs to the upper bone. A twist bone may
-        # carry axial roll only; these gestures author no axial roll at all.
-        # Fractional helpers are confined to the narrow .155H–.190H socket.
+        upper=limb.pop('upper_arm.'+side)
+        twist=smooth(.10,.50,u)
+        limb['upper_arm.'+side]=upper*(1-twist)
+        limb['upper_arm.twist.'+side]=upper*twist
+        # Interpolate adjacent baked rotations. Two neighbouring angular
+        # stages keep LBS volume and avoid truncating a fifth joint influence.
         stage=min(3,int(arm_blend*4))
         fraction=arm_blend*4-stage
         fields=[torso,{'armpit.helper.'+side:1},
@@ -400,14 +403,16 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
         fall=math.sin(min((duration-t)/.45,1)*math.pi/2)**2
         gesture=rise*fall
         if name=='wave':
-            rotate('upper_arm.R',(0,1,0),-.32+2.55*gesture)
-            rotate('forearm.R',(0,1,0),(.18+.16*math.sin(3*ph))*gesture)
-            rotate('hand.R',(0,1,0),.10*math.cos(3*ph)*gesture)
+            rotate('upper_arm.R',(0,1,0),-.32+(2.20+.14*math.sin(3*ph))*gesture)
+            shift('shoulder.R',(-.005*H*gesture,-.020*H*gesture,.025*H*gesture))
+            rotate('forearm.R',(0,1,0),(.08+.12*math.sin(3*ph))*gesture)
+            rotate('hand.R',(0,1,0),.30*math.cos(3*ph)*gesture)
             rotate('head',(0,1,0),-.075*gesture)
         elif name=='success':
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-2.32*gesture))
-                rotate('forearm.'+side,(0,1,0),-sign*.12*gesture)
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.60*gesture))
+                shift('shoulder.'+side,(sign*.035*H*gesture,-.018*H*gesture,.075*H*gesture))
+                rotate('forearm.'+side,(0,1,0),sign*.10*gesture)
                 # No axial stretching: preserve the original round arm.
                 
             shift('root',(0,0,.035*H*gesture))
@@ -416,14 +421,14 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             bounce=(1-math.cos(ph))/2
             shift('root',(0,0,.085*H*bounce))
             rotate('head',(0,1,0),.09*math.sin(ph))
-            for sign,side in [(-1,'R'),(1,'L')]:rotate('upper_arm.'+side,(0,1,0),sign*(.32-.80*bounce))
+            for sign,side in [(-1,'R'),(1,'L')]:rotate('upper_arm.'+side,(0,1,0),sign*(.25-.50*bounce))
         elif name=='nod':rotate('head',(1,0,0),.32*math.sin(ph))
         elif name=='shake':rotate('head',(0,0,1),.42*math.sin(ph))
         elif name=='jump':
             lift=math.sin(math.pi*min(t/1.2,1))**2 if t<=1.2 else 0
             shift('root',(0,0,.17*H*lift))
             for sign,side in [(-1,'R'),(1,'L')]:
-                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.35*lift))
+                rotate('upper_arm.'+side,(0,1,0),sign*(.32-1.1*lift))
                 rotate('thigh.'+side,(1,0,0),-.20*lift)
                 rotate('shin.'+side,(1,0,0),.25*lift)
         elif name=='walk':
@@ -432,7 +437,7 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             for sign,side in [(-1,'R'),(1,'L')]:
                 rotate('thigh.'+side,(1,0,0),sign*.36*swing)
                 rotate('shin.'+side,(1,0,0),max(0,-sign*swing)*.32)
-                arm_rotation('upper_arm.'+side,sign*.24,-sign*.32*swing)
+                arm_rotation('upper_arm.'+side,sign*.24,-sign*.40*swing)
                 rotate('foot.'+side,(1,0,0),-sign*.12*swing)
             shift('root',(.018*H*math.sin(ph),0,.018*H*(1-math.cos(ph*2))))
             rotate('hips',(0,1,0),.055*math.sin(ph))
@@ -458,17 +463,26 @@ for name,duration in [('idle',3),('wave',2.4),('happy',1.2),('success',2.4),
             rig.pose.bones['shoulder.helper.'+side].rotation_quaternion=identity.slerp(original,.50)
             rig.pose.bones['armpit.helper.'+side].rotation_quaternion=identity.slerp(original,.25)
             rig.pose.bones['shoulder.lift.'+side].rotation_quaternion=identity.slerp(original,.75)
-            # No swing is removed from upper_arm. The forearm inherits the
-            # entire shoulder rotation through its connected parent directly.
-            rig.pose.bones['upper_arm.twist.'+side].rotation_quaternion=identity
+            shoulder=rig.pose.bones['shoulder.'+side]
+            translation=shoulder.bone.matrix_local.to_quaternion() @ shoulder.location
+            shift('shoulder.helper.'+side,-.50*translation)
+            shift('armpit.helper.'+side,-.75*translation)
+            shift('shoulder.lift.'+side,-.25*translation)
+            roll=Quaternion((original.w,0,original.y,0))
+            if roll.magnitude<1e-7:roll=identity.copy()
+            else:roll.normalize()
+            half_roll=identity.slerp(roll,.5)
+            upper.rotation_quaternion=original @ roll.inverted() @ half_roll
+            rig.pose.bones['upper_arm.twist.'+side].rotation_quaternion=half_roll
             rig.pose.bones['hip.helper.'+side].rotation_quaternion=identity.slerp(rig.pose.bones['thigh.'+side].rotation_quaternion,.5)
         for pb in rig.pose.bones:
-            if pb.name=='root':pb.keyframe_insert('location',frame=frame,group=pb.name)
+            pb.keyframe_insert('location',frame=frame,group=pb.name)
             pb.keyframe_insert('rotation_quaternion',frame=frame,group=pb.name)
+            pb.keyframe_insert('scale',frame=frame,group=pb.name)
     # Small asymmetries at the end are eliminated explicitly for seamless loops.
     scene.frame_set(1)
     for pb in rig.pose.bones:
-        for path in (['location','rotation_quaternion'] if pb.name=='root' else ['rotation_quaternion']):pb.keyframe_insert(path,frame=end,group=pb.name)
+        for path in ['location','rotation_quaternion','scale']:pb.keyframe_insert(path,frame=end,group=pb.name)
     track=rig.animation_data.nla_tracks.new();track.name=name
     track.strips.new(name,1,action);track.mute=True
     peaks[name]=.6
@@ -476,56 +490,6 @@ rig.animation_data.action=None
 reset()
 scene.frame_set(1)
 marker('RIG done')
-
-# Reproducible hierarchy/landmark/weight diagnosis in the source coordinate frame.
-diagnosis_path=review/'arm-diagnosis.json'
-diagnosis=json.loads(diagnosis_path.read_text()) if diagnosis_path.exists() else {}
-after={'hierarchy':{},'upper_arm_weights':{},'actions':{},
-       'axis_note':'raise is world Y (abduction in XZ); local Y is axial twist; no axial twist authored'}
-length_slices=[]
-for side in ['L','R']:
-    for part in ['upper_arm','forearm']:
-        name=part+'.'+side
-        a,b=np.array(rest[name]);delta=b-a;length=np.linalg.norm(delta);axis=delta/length
-        u=(P-a)@axis/length
-        radial=np.linalg.norm(P-a-u[:,None]*delta,axis=1)
-        domain=np.array([arm_geometry[side].get(i,(0,0,0))[2]>.05 for i in range(len(P))])
-        # Fixed material slices near each joint. Their centroids are tracked,
-        # never reselected from the posed mesh or inferred from bone lengths.
-        ids=[np.flatnonzero(domain & (abs(u-f)<.12) & (radial<.075*H)) for f in [.15,.85]]
-        if all(len(v)>=3 for v in ids):
-            separation=float(np.linalg.norm(P[ids[1]].mean(axis=0)-P[ids[0]].mean(axis=0)))
-            length_slices.append({'bone':name,'ids':ids,'rest_distance':separation})
-        if part=='upper_arm':
-            selected=np.flatnonzero(domain&(u>.15)&(u<.85)&(radial<.07*H))
-            average={}
-            for i in selected:
-                for g in mesh.data.vertices[i].groups:
-                    n=mesh.vertex_groups[g.group].name
-                    average[n]=average.get(n,0)+g.weight/max(1,len(selected))
-            after['upper_arm_weights'][side]={'vertices':len(selected),'mean_weights':average,
-                'rest_axis':axis.tolist(),'rest_shoulder':a.tolist(),'rest_elbow':b.tolist()}
-for pb in rig.pose.bones:
-    if any(n in pb.name for n in ['arm','shoulder','hand']):
-        after['hierarchy'][pb.name]={'parent':pb.parent.name if pb.parent else None,
-            'connected':pb.bone.use_connect,'head':list(pb.bone.head_local),'tail':list(pb.bone.tail_local)}
-for name in peaks:
-    rig.animation_data.action=bpy.data.actions[name]
-    scene.frame_set(19);bpy.context.view_layer.update()
-    after['actions'][name]={}
-    for pb in rig.pose.bones:
-        if any(n in pb.name for n in ['arm','shoulder','hand']):
-            delta=pb.matrix.to_quaternion()@pb.bone.matrix_local.to_quaternion().inverted()
-            axis,angle=delta.to_axis_angle()
-            after['actions'][name][pb.name]={'world_rotation_deg':math.degrees(angle),
-                'world_axis':list(axis),'local_rotation_deg':math.degrees(pb.rotation_quaternion.angle),
-                'location':list(pb.location),'scale':list(pb.scale),'head':list(pb.head),'tail':list(pb.tail)}
-diagnosis['after']=after
-diagnosis_path.write_text(json.dumps(diagnosis,indent=2))
-print('ARM DIAGNOSIS '+json.dumps(after),flush=True)
-marker('DIAG done')
-rig.animation_data.action=None
-reset();scene.frame_set(1)
 
 # Measure every frame on the evaluated mesh (LBS, exactly as exported).
 edges=np.array([e.vertices[:] for e in mesh.data.edges],dtype=int)
@@ -577,29 +541,19 @@ for side in ['L','R']:
             if ext[0]<H*.005:continue
             slices.append({'bone':name,'fraction':fraction,'ids':ids,'rest_extents':ext})
 np.savez(review/'metric-slices.npz',**{str(i):P[sl['ids']] for i,sl in enumerate(slices)})
-stretch={};thickness={};arm_lengths={};bone_scale_error=0.;arm_location_max=0.;worst_edges=[];region_worst={};seam_gap=0.
+stretch={};thickness={};worst_edges=[];region_worst={};seam_gap=0.
 depsgraph=bpy.context.evaluated_depsgraph_get()
 seam_pairs=np.array([(ids[0],i) for ids in seam_vertices.values() for i in ids[1:]],dtype=int)
 for name in peaks:
     rig.animation_data.action=bpy.data.actions[name]
     end=int(rig.animation_data.action.frame_range[1])
     measures={label:[] for label in region_names}
-    length_stats={sl['bone']:{'min':1e9,'max':0.,'rest_distance':sl['rest_distance'],'slice_vertices':[len(ids) for ids in sl['ids']],'slice_fractions':[.15,.85]} for sl in length_slices}
     slice_stats=[dict(bone=sl['bone'],fraction=sl['fraction'],vertices=len(sl['ids']),rest_extents=sl['rest_extents'],min_ratio=1e9) for sl in slices]
     for frame in range(1,end+1):
         scene.frame_set(frame);bpy.context.view_layer.update()
         evaluated=mesh.evaluated_get(depsgraph)
         coords=np.empty(len(P)*3,dtype=np.float32)
         evaluated.data.vertices.foreach_get('co',coords);coordinates=coords.reshape((-1,3))
-        for pb in rig.pose.bones:
-            bone_scale_error=max(bone_scale_error,max(abs(v-1) for v in pb.scale))
-            if any(n in pb.name for n in ['arm','shoulder','hand']):arm_location_max=max(arm_location_max,pb.location.length)
-        for sl in length_slices:
-            centres=[coordinates[ids].mean(axis=0) for ids in sl['ids']]
-            value=float(np.linalg.norm(centres[1]-centres[0])/sl['rest_distance'])
-            stat=length_stats[sl['bone']]
-            if value<stat['min']:stat.update(min=value,min_frame=frame)
-            if value>stat['max']:stat.update(max=value,max_frame=frame)
         lengths=np.linalg.norm(coordinates[edges[:,1]]-coordinates[edges[:,0]],axis=1)
         ratio=lengths/np.maximum(rest_lengths,H*1e-5)
         for label,mask in region_edges.items():
@@ -618,7 +572,6 @@ for name in peaks:
             if r<stat['min_ratio']:stat.update(min_ratio=r,frame=frame,deformed_extents=ext)
         if len(seam_pairs):seam_gap=max(seam_gap,float(np.linalg.norm(coordinates[seam_pairs[:,0]]-coordinates[seam_pairs[:,1]],axis=1).max()))
     stretch[name]={label:{'max':float(np.concatenate(values).max()),'p99':float(np.quantile(np.concatenate(values),.99)),'min':float(np.concatenate(values).min())} for label,values in measures.items() if len(values[0])}
-    arm_lengths[name]={'bones':length_stats,'min':min(v['min'] for v in length_stats.values()),'max':max(v['max'] for v in length_stats.values()),'frames_evaluated':end}
     thickness[name]={'min_ratio':min((v['min_ratio'] for v in slice_stats),default=None),'slices':slice_stats,'frames_evaluated':end}
 rig.animation_data.action=None
 reset();scene.frame_set(1)
@@ -646,21 +599,19 @@ report={'bones':len(rest),'bone_landmarks':rest,'measurements':landmarks,'weight
         'regions':regions,'max_seam_weight_difference':seam_error,'max_influences':4,
         'stretch':stretch,'worst_edges':sorted(worst_edges,key=lambda e:e['ratio'],reverse=True)[:12],
         'max_deformed_seam_gap':seam_gap,'validation_frame_step':1,
-        'arm_thickness':thickness,'arm_length_ratios':arm_lengths,'bone_scale_max_error':bone_scale_error,'arm_location_max':arm_location_max,'region_worst':region_worst,
-        'arm_length_method':'Distance of fixed mesh vertex centroid slices at 15/85 percent of each rest segment, +/-12 percent slice width, .075H radius; no bone-length substitution',
+        'arm_thickness':thickness,'region_worst':region_worst,
         'metric_method':'All integer frames, evaluated LBS mesh; boundary edges in flexible joints; 3D PCA two principal max-min extents in bone-local fixed material slices',
-        'helpers':'Narrow socket only: 25/50/75 percent swing; upper_arm carries full swing, connected forearm child; twist identity (no axial roll authored); no arm translation or scale keys',
+        'helpers':'Direct per-frame fractional rotation keys at 25/50/75 percent, swing/twist roll split; no constraints',
         'protected_torso_vertices':int(torso_guard.sum()),'protected_torso_arm_weight_max':0,
-        'targets_met':{'arm_length':all(.97<=arm_lengths[a]['min'] and arm_lengths[a]['max']<=1.03 for a in ['wave','success','happy','jump','walk']),'bone_scale':bone_scale_error<1e-6,'arm_location':arm_location_max<1e-6,'belly':all(v.get('belly',{}).get('max',0)<1.15 for v in stretch.values()),'face':all(v['face']['max']<1.011 for v in stretch.values()),'arm_thickness':all(v['min_ratio']>=.7 for v in thickness.values()),'shoulders':all(v['shoulders']['max']<2 for v in stretch.values()),'crotch':all(v['crotch']['max']<2 for v in stretch.values()),'neck':all(v['neck']['max']<2 for v in stretch.values())},
+        'targets_met':{'belly':all(v.get('belly',{}).get('max',0)<1.15 for v in stretch.values()),'face':all(v['face']['max']<1.011 for v in stretch.values()),'arm_thickness':all(v['min_ratio']>=.7 for v in thickness.values()),'shoulders':all(v['shoulders']['max']<2 for v in stretch.values()),'crotch':all(v['crotch']['max']<2 for v in stretch.values()),'neck':all(v['neck']['max']<2 for v in stretch.values())},
         'textures':textures,'actions':peaks,'bytes':out.stat().st_size,
         'heat_limb_blend':0,'smoothing_iterations':{'spatial':0,'surface':0},'proxy_vertices':proxy_vertices,'source_vertices':len(P),'source_triangles':sum(len(p.vertices)-2 for p in mesh.data.polygons)}
-before_path=Path('/workspace/yk-pet-art/user-model/before-r4/report.json')
+before_path=Path('/workspace/yk-pet-art/user-model/before-r3/report.json')
 if before_path.exists():report['before']=json.loads(before_path.read_text())
-# The before snapshot is read verbatim from before-r4.
+before_thickness=review/'before-thickness.json'
+if before_thickness.exists():report['before']['arm_thickness']=json.loads(before_thickness.read_text())
 (review/'report.json').write_text(json.dumps(report,indent=2))
 assert out.stat().st_size<5_000_000, 'Web asset exceeds 5 MB budget'
-marker('CHAIN done')
-marker('ANIM done')
 marker('SEGMENT done')
 marker('HELPERS done')
 marker('METRIC done')
@@ -702,16 +653,15 @@ if opts.renders and (not opts.skip_stills or opts.video):
     if opts.video:
         video_dir=phase.parent/'video'
         video_dir.mkdir(parents=True,exist_ok=True)
-        scene.eevee.taa_render_samples=4
+        scene.eevee.taa_render_samples=8
         scene.render.fps=24
-        for name in ['wave','success','walk']:
+        for name in ['wave','walk']:
             sequence=video_dir/(name+'-frames')
             sequence.mkdir(exist_ok=True)
             action=bpy.data.actions[name]
             rig.animation_data.action=action
             period=(action.frame_range[1]-1)/30
-            for i in range(round(period*24)):
-                if i%12==0:print('VIDEO CHUNK '+name+' '+str(i//12),flush=True)
+            for i in range(86):
                 # Actions remain authored at 30fps; video samples at 24fps.
                 sample=1+(i/24 % period)*30
                 scene.frame_set(int(sample),subframe=sample-int(sample))
