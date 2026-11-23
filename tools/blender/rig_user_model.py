@@ -12,7 +12,7 @@ segmentation and identical seam weights protect exclusive ear/head/tail domains.
 Four influences maximum, no geometry reduction. All nine looping actions have a readable pose
 at 0.6 s. WebP maps are embedded, with no external decoder dependency in three.
 A landmark/weight/export report and editable review blend accompany the renders.
-Add --video for 512px, 24fps H.264 wave/walk previews in .art-scratch/video.
+Add --video for 512px, 24fps H.264 wave/success/walk previews in .art-scratch/video.
 """
 import argparse
 import json
@@ -31,7 +31,7 @@ parser.add_argument('--in', dest='source', required=True)
 parser.add_argument('--out', required=True)
 parser.add_argument('--renders')
 parser.add_argument('--skip-stills', action='store_true')
-parser.add_argument('--video', action='store_true', help='Render 3.6 second wave/walk MP4 previews')
+parser.add_argument('--video', action='store_true', help='Render one full wave/success/walk loop as MP4/GIF previews')
 opts = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
 out = Path(opts.out).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +299,7 @@ for i,p in enumerate(P):
         radius=distance(p,shoulder,palm_end)
         # Full arm domain is on the outside of the shoulder plane and inside
         # its capsule. The only chest/arm mix is the short shoulder socket.
-        capsule=1-smooth(.13*H,.16*H,radius)
+        capsule=1-smooth(.060*H,.085*H,radius)
         arm_blend=smooth(-.018*H,.012*H,plane)*capsule
         arm_blend*=smooth(.155*H,.190*H,abs(x-cx))
         arm_blend*=1-(1-smooth(z0+.215*H,z0+.275*H,z))*(1-smooth(.19*H,.22*H,abs(x-cx)))
@@ -702,15 +702,16 @@ if opts.renders and (not opts.skip_stills or opts.video):
     if opts.video:
         video_dir=phase.parent/'video'
         video_dir.mkdir(parents=True,exist_ok=True)
-        scene.eevee.taa_render_samples=8
+        scene.eevee.taa_render_samples=4
         scene.render.fps=24
-        for name in ['wave','walk']:
+        for name in ['wave','success','walk']:
             sequence=video_dir/(name+'-frames')
             sequence.mkdir(exist_ok=True)
             action=bpy.data.actions[name]
             rig.animation_data.action=action
             period=(action.frame_range[1]-1)/30
-            for i in range(86):
+            for i in range(round(period*24)):
+                if i%12==0:print('VIDEO CHUNK '+name+' '+str(i//12),flush=True)
                 # Actions remain authored at 30fps; video samples at 24fps.
                 sample=1+(i/24 % period)*30
                 scene.frame_set(int(sample),subframe=sample-int(sample))
