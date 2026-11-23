@@ -127,7 +127,7 @@ feet = P[(P[:,2]<z0+.08*H)&(P[:,1]<body_y+.08*H)]
 landmarks = {'height':H, 'body_center_x':cx, 'body_y':body_y,
              'neck_z':neck_z, 'head_width':head_width, 'bounds':[lo.tolist(),hi.tolist()]}
 
-# Rip the fused inner-arm/waist contact without moving the original surface.
+# Rip the fused inner-arm/waist contact; only the freed seam rims are inset.
 # Face ownership follows the inner capsule tangent; only the socket stays shared.
 source_mesh = mesh.data.copy()
 source_vertex_count = len(P)
@@ -210,7 +210,7 @@ for side in [-1,1]:
                 normals.append([tuple(n)]*3);materials.append(0);cap_count+=1
 for (i,side),duplicate in duplicates.items():
     coords[duplicate][0]=cx+side*(.32-.40*zn[i])*H
-# Recess only the freed torso rim into the side wall; the arm rim is unchanged.
+# Recess the freed torso rim into the side wall.
 for i in split_ids:
     sign=1 if P[i,0]>cx else -1
     rim=abs(P[i,0]-cx)/H
@@ -233,7 +233,7 @@ adjacency=[[] for _ in P]
 for edge in mesh.data.edges:
     a,b=edge.vertices;length=float(np.linalg.norm(P[a]-P[b]))
     adjacency[a].append((b,length));adjacency[b].append((a,length))
-split_report={'method':'Exterior-preserving face-boundary rip below 0.365H socket, independent inset UV caps',
+split_report={'method':'Face-boundary rip below 0.365H socket, recessed torso rim and separate inset UV caps',
     'bridging_faces_removed':0,'boundary_edges_ripped':seam_edge_count,
     'vertices_duplicated':len(duplicates),'caps_added':cap_count,
     'original_vertices_moved':int(sum(abs(coords[i][0]-source_mesh.vertices[i].co.x)>1e-8 for i in range(source_vertex_count))),'arm_vertices':{'R':int((arm_domain==-1).sum()),'L':int((arm_domain==1).sum())}}
