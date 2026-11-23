@@ -43,3 +43,35 @@ python3 tools/blender/inspect_glb.py examples/models/felt-fox.glb
 
 The optional render also saves an editable `.art-scratch/felt-fox.blend`.
 Studio, lights, floor and camera are excluded from the exported character.
+
+## Owner's fox
+
+`user-fox.glb` preserves the owner's original mesh and UVs, with a fitted 28-bone
+skin and nine looping clips: `idle`, `wave`, `happy`, `success`, `nod`, `shake`,
+`jump`, `walk`, and `sleep`. The playground maps thinking to nod, error/sad to
+shake, and unsupported actions to idle. Open
+`/?renderer=3d&style=plush&model=user-fox&action=wave&hold=1`.
+All clips have a readable held pose at `sampleTime: 0.6` seconds.
+
+Regenerate using the external, read-only original (never add it to this repo):
+
+```sh
+BLENDER_USER_CONFIG=/tmp/bcfg BLENDER_USER_SCRIPTS=/tmp/bscripts \
+  /home/box/.local/bin/blender -b --factory-startup \
+  --python tools/blender/rig_user_model.py -- \
+  --in /workspace/yk-pet-art/user-model/original.glb \
+  --out examples/models/user-fox.glb --renders .art-scratch/user-rig
+python3 tools/blender/inspect_user_model.py examples/models/user-fox.glb
+```
+
+The script measures anatomical clusters, attempts automatic weights, then repairs
+the split surface using geodesic regions and smooth capsule weights. The face
+stays rigid, the tail uses only its four bones, and weights are normalised to
+four influences. EEVEE peak renders, a landmark/weight report, and an editable
+review blend go under `--renders`. The source is neither modified nor copied.
+
+The web asset is about 4.37 MB, with embedded WebP maps: 2048px base colour,
+1024px normal and metallic/roughness. It needs three's built-in
+`EXT_texture_webp` support; no geometry decoder is required. The original
+18,486 triangles are retained. Sleep uses a drooped head and slow breathing;
+the source has no eyelid or facial shape keys.

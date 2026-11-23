@@ -16,6 +16,7 @@ import {
 } from '@yk-pet/core'
 import { defineYkPet, type YkPetElement } from '@yk-pet/element'
 import { translate, type Lang, type MessageKey } from './i18n'
+import { userFoxAnimations } from './models'
 
 type Theme = 'soft' | 'pro' | 'glass'
 type Mode = 'simple' | 'pro'
@@ -64,6 +65,15 @@ if (query.get('model') === 'felt-fox') {
     model: {
       url: new URL('../../../examples/models/felt-fox.glb', import.meta.url).href,
       animations: { idle: 'idle', wave: 'wave', happy: 'happy', success: 'success' },
+    },
+    behavior: { autonomous: false },
+  })
+}
+if (query.get('model') === 'user-fox') {
+  pet.setConfig({
+    model: {
+      url: new URL('../../../examples/models/user-fox.glb', import.meta.url).href,
+      animations: userFoxAnimations,
     },
     behavior: { autonomous: false },
   })
